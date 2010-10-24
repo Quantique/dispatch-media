@@ -1,0 +1,416 @@
+#!/usr/bin/python2
+# Copyright 2010 Quantique. Licence: GPL3+
+# ~/bin/dispatch-media
+
+"""
+Send downloaded media to its rightful place, according to its nature.
+
+This script looks for downloaded archives and torrents.
+Configure it in ~/.config/dispatch-media.conf
+Example below.
+
+Dependencies (some could be made optional):
+- python-libtorrent (reading .torrent files)
+- python-yaml (configuration)
+- p7zip-full (listing many archives)
+- p7zip-rar (listing rar archives)
+- dtrx (extracting archives)
+- unrar (extracting rar archives)
+
+
+# ~/.config/dispatch-media.conf
+
+# Where content gets downloaded.
+# You may have several sources of each type.
+sources:
+-   type: archives
+    # A directory that contains rar archives
+    search: ~/down/archives
+    # Look in subdirectories, but no deeper
+    depth: 2
+    action: extract
+
+-   type: torrents
+    # Names of completed torrents
+    pattern: ~/rtorrent/done/*.torrent
+    # torrent content is downloaded as ${download}/${name-in-torrent}
+    download: ~/down
+    # hardlink, symlink-once, symlink-deep
+    action: symlink-deep
+
+places:
+    # The place to put recognized media.
+    # Valid categories each have a subdirectory.
+    basedir: ~/media
+
+    # Categories to autodispatch.
+    # Others will be skipped, use --verbose to see which.
+    accept: [album, discography, e-book, font, movie, series]
+
+    # Create category directory if it doesn't exist
+    autocreate: true
+
+    # Categories are lowercase plural
+    lowercase: true
+    pluralize: true
+
+    # Relocate some categories from their default names
+    # Can also be used to go outside basedir
+    albums: music/albums
+    discographies: music/discogs
+
+"""
+
+import bb2008_classify
+from bb2008_classify import (
+        seven_iter, torrent_files_iter, unix_basename, classify)
+from bb2008_common import iso8601_now
+from bb2008_torrents import read_torrent
+from bb2008_media_types import Media
+
+import errno
+import glob
+import logging
+import optparse
+import os
+import os.path
+import re
+import subprocess
+import sys
+import yaml
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def link_once(orig, dest, symbolic):
+    if os.path.lexists(dest):
+        if not os.path.exists(dest):
+            LOGGER.warn(
+                    '%s already exists and is a broken symlink, skipping',
+                    dest)
+        elif not os.path.samefile(orig, dest):
+            LOGGER.warn(
+                    '%s already exists and doesn\'t point to %s, skipping',
+                    dest, orig)
+        return
+    if symbolic:
+        orig_rel = os.path.relpath(orig, os.path.dirname(dest))
+        os.symlink(orig_rel, dest)
+    else:
+        try:
+            os.link(orig, dest)
+        except OSError, e:
+            if e.errno != errno.EPERM:
+                raise
+            # chattr +i prevents hardlinking, sadly
+            LOGGER.warn('%s linking %s to %s', e.strerror, orig, dest)
+
+def link_deep(orig, dest, symbolic):
+    """
+    To delete a symlink tree:
+        find \( -type l -o \( -type d -empty \) \) -delete
+    """
+
+    if not os.path.isdir(orig):
+        link_once(orig, dest, symbolic)
+        return
+    for (dirpath, dirnames, filenames) in os.walk(orig):
+        if dirpath == orig:
+            d2 = dest
+        else:
+            d2 = os.path.join(dest, os.path.relpath(dirpath, orig))
+        if os.path.exists(d2):
+            if not os.path.isdir(d2):
+                LOGGER.warn('%s already exists and isn\'t a directory', d2)
+                # Prevent recursion
+                dirnames[:] = []
+                continue
+        else:
+            os.mkdir(d2)
+        for fname in filenames:
+            link_once(os.path.join(dirpath, fname),
+                    os.path.join(d2, fname), symbolic)
+
+def symlink_once(orig, dest):
+    link_once(orig, dest, symbolic=True)
+
+def symlink_deep(orig, dest):
+    link_deep(orig, dest, symbolic=True)
+
+def hardlink_deep(orig, dest):
+    link_deep(orig, dest, symbolic=False)
+
+# FS actions really
+TORRENT_ACTIONS = {
+    'symlink-once': symlink_once,
+    'symlink-deep': symlink_deep,
+    'hardlink':     hardlink_deep,
+    }
+
+
+STRIP_RAR_SUFFIX_RE = re.compile(r'(.*?)(\.part0*1)?\.rar$', re.I)
+EXTRACT_BAK = 'extract-bak'
+EXTRACT_LOG = 'extract-log'
+
+class RarRelease(object):
+    def __init__(self,
+            parent, archive_name, short_name, archive_files, aux_files):
+        self.parent = parent
+        self.archive_name = archive_name
+        self.short_name = short_name
+        self.archive_files = archive_files
+        self.aux_files = aux_files
+
+    def path(self, name):
+        return os.path.join(self.parent, name)
+
+    def aux_name(self, suffix):
+        return self.short_name + '.' + suffix
+
+    def aux_path(self, suffix):
+        return self.path(self.aux_name(suffix))
+
+    @property
+    def archive_path(self):
+        return self.path(self.archive_name)
+
+def iter_rar_releases(basedir, depth):
+    # Path vs options. '-(!' are unsafe.
+    if not os.path.isabs(basedir):
+        basedir = './' + basedir
+
+    # Find single-part archives and first parts of multi-part archives.
+    cmd = [ 'find', '-H', basedir,
+        '-maxdepth', str(depth),
+        '-iname', '*.' + EXTRACT_BAK, '-prune',
+        '-o', '(',
+            '-type', 'f',
+            '-iname', '?*.rar',
+            '-a', '(',
+                '-iregex', '.*\.part0*1\.rar$',
+                '-o', '!', '-iregex', '.*\.part[0-9]+.rar$',
+                ')',
+            ')', '-print',
+        ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+
+    for line in proc.stdout:
+        archive_path = line.rstrip()
+        prefix, part = STRIP_RAR_SUFFIX_RE.match(archive_path).groups()
+        parent, pfx_name = os.path.split(prefix)
+        parent1, archive_name = os.path.split(archive_path)
+        assert parent == parent1
+
+        if part: # multipart archive
+            archive_files_re = re.compile('^' + re.escape(pfx_name)
+                    + '\\' + part.replace('0', '[0-9]').replace('1', '[0-9]')
+                    + '\.rar$', re.I)
+        else: # might yet be the .r00 kind of multipart.
+            archive_files_re = re.compile('^' +
+                    re.escape(archive_name[:-2]) + '(ar|[0-9]{2})$', re.I)
+        aux_files_re = re.compile('^' + re.escape(pfx_name) + '.*$', re.I)
+        aux_files = set(fname
+                for fname in os.listdir(parent)
+                if aux_files_re.match(fname))
+        archive_files = set(fname
+                for fname in aux_files if archive_files_re.match(fname))
+        aux_files.difference_update(archive_files)
+
+        rr = RarRelease(parent, archive_name, pfx_name,
+                archive_files, aux_files)
+        yield rr
+
+    proc.wait()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(cmd, proc.returncode)
+
+def extract_archive(rr, dest_base):
+    logname = rr.aux_name(EXTRACT_LOG)
+
+    # This check is a bit redundant now that we move to extract-bak
+    # and prune the search.
+    if logname in rr.aux_files:
+        LOGGER.info('Archive %s has been extracted, continuing anyway',
+                rr.archive_path)
+
+    # List the files so we know where they were extracted.
+    cmd = [ 'dtrx', '-nv', '--', os.path.abspath(rr.archive_path) ]
+    proc = subprocess.Popen(cmd,
+            cwd=dest_base, stdout=subprocess.PIPE)
+
+    line = next(proc.stdout)
+    dtrx_dest = os.path.normpath(line.rstrip())
+    if os.path.sep in dtrx_dest:
+        dtrx_dest = dtrx_dest[:dtrx_dest.index(os.path.sep)]
+    dtrx_dest = os.path.join(dest_base, dtrx_dest)
+
+    proc.wait()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(cmd, proc.returncode)
+
+    with open(rr.path(logname), 'a') as log:
+        yaml.dump(
+                [{'extracted-to': dtrx_dest, 'date': iso8601_now(), }],
+                log, default_flow_style=False)
+    extract_bak = rr.aux_path(EXTRACT_BAK)
+    try:
+        os.mkdir(extract_bak)
+    except OSError, e:
+        if e.errno != errno.EEXIST:
+            raise
+    for part in rr.archive_files:
+        os.rename(rr.path(part), os.path.join(extract_bak, part))
+
+
+
+# Not the same prototype as TORRENT_ACTIONS!
+# One takes dest, the other dest_base
+ARCHIVE_ACTIONS = {
+    'extract': extract_archive,
+    }
+
+def down_loc_of_torrent(tdata, down_base, use_rtorrent_meta=True):
+    name = tdata['info']['name']
+    if use_rtorrent_meta and 'rtorrent' in tdata:
+        down_loc = os.path.expanduser(tdata['rtorrent']['directory'])
+        if 'files' not in tdata['info']:
+            down_loc = os.path.join(down_loc, name)
+    else:
+        down_loc = os.path.join(down_base, name)
+    return down_loc, name
+
+def build_locations(places_config):
+    lowercase = places_config['lowercase']
+    pluralize = places_config['pluralize']
+
+    accepted = places_config['accept']
+    accepted = set(Media.registry[cat] for cat in accepted)
+
+    basedir = os.path.expanduser(places_config['basedir'])
+    locations = {}
+
+    for cat in accepted:
+        name = cat.name(lower=lowercase, plural=pluralize)
+        if name in places_config:
+            loc = os.path.expanduser(places_config[name])
+        else:
+            loc = name
+        loc = os.path.join(basedir, loc)
+        locations[cat] = loc
+
+    return locations
+
+def lookup_cat(kind, path, locations, autocreate):
+    try:
+        if kind == 'archive':
+            it = seven_iter(path)
+        elif kind == 'torrent':
+            try:
+                it = torrent_files_iter(path)
+            except TorrentFileError: # XXX already logged
+                return
+        try:
+            cat = classify(it, unix_basename(path))
+        except subprocess.CalledProcessError, e:
+            LOGGER.warn(e)
+            return
+
+    except subprocess.CalledProcessError:
+        LOGGER.warn('Error classifying %s %s', kind, path)
+        return
+    if cat in ('Unknown', 'Empty', ):
+        LOGGER.info('Skipping %s %s %s', cat, kind, path)
+        return
+    cat = Media.registry[cat]
+    if cat not in locations:
+        LOGGER.info('Skipping %s %s %s', cat.name(), kind, path)
+        return
+    dest_base = locations[cat]
+    if not os.path.exists(dest_base):
+        if autocreate:
+            LOGGER.info('Creating %s', dest_base)
+            os.makedirs(dest_base, mode=0700)
+        else:
+            LOGGER.warn('Skipping %s %s, please create %s',
+                    kind, path, dest_base)
+            return
+    return dest_base
+
+def dispatch_torrents(torrents_config, locations, autocreate):
+    torrents_pattern = os.path.expanduser(torrents_config['pattern'])
+    down_base = os.path.expanduser(torrents_config['download'])
+    action = TORRENT_ACTIONS[torrents_config['action']]
+
+    for torrent in glob.iglob(torrents_pattern):
+        dest_base = lookup_cat('torrent', torrent, locations, autocreate)
+        if dest_base is None:
+            continue
+        tdata = read_torrent(torrent)
+        down_loc, name = down_loc_of_torrent(tdata, down_base)
+        dest_loc = os.path.join(dest_base, name)
+        action(down_loc, dest_loc)
+
+def dispatch_archives(archives_config, locations, autocreate):
+    search_base = os.path.expanduser(archives_config['search'])
+    depth = archives_config['depth']
+    action = ARCHIVE_ACTIONS[archives_config['action']]
+
+    for rr in iter_rar_releases(search_base, depth):
+        dest_base = lookup_cat('archive', rr.archive_path,
+                locations, autocreate)
+        if dest_base is None:
+            continue
+        action(rr, dest_base)
+
+
+DEFAULT_CONF = '~/.config/dispatch-media.conf'
+
+def main():
+    parser = optparse.OptionParser()
+    parser.add_option('-v', '--verbose',
+            action='count',
+            dest='verbosity',
+            default=0,
+            help='Increase verbosity',
+            )
+
+    parser.add_option('--config',
+            help='Load configuration from CONFIG instead of %s' % DEFAULT_CONF,
+            )
+
+    (options, args) = parser.parse_args()
+    # WARNING, INFO, DEBUG
+    log_level = logging.WARNING - 10 * options.verbosity
+    logging.basicConfig(level=log_level, format='%(levelname)s: %(message)s')
+    bb2008_classify.LOGGER.level = log_level + 10
+
+    if options.config is None:
+        options.config = os.path.expanduser(DEFAULT_CONF)
+
+    if args:
+        parser.print_help()
+        return 2
+
+    try:
+        with open(options.config) as confstream:
+            config = yaml.safe_load(confstream)
+    except IOError, e:
+        LOGGER.error('Configuration file %s couldn\'t be loaded, exiting',
+                options.config)
+        return 3
+
+    autocreate = config['places']['autocreate']
+    locations = build_locations(config['places'])
+
+    for source in config['sources']:
+        if source['type'] == 'archives':
+            dispatch_archives(source, locations, autocreate)
+        elif source['type'] == 'torrents':
+            dispatch_torrents(source, locations, autocreate)
+        else:
+            LOGGER.error('Invalid source type %s', source['type'])
+
+if __name__ == '__main__':
+    sys.exit(main())
+

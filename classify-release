@@ -1,0 +1,136 @@
+#!/usr/bin/python2
+# Copyright 2010 Quantique. Licence: GPL3+
+# ~/bin/classify-release
+
+"""
+Classify a scene release.
+
+Usage:
+    classify-release  --find    path/to/release-dir
+    classify-release  --torrent path/to/file.torrent
+    classify-release  --archive path/to/archive.rar
+    classify-release  --stdin
+
+In --stdin mode (the default),
+takes a list of size (in bytes) SPACE file name NEWLINE on stdin.
+File names mustn't include directories.
+
+Dependencies (could be made optional):
+- python-libtorrent (reading .torrent files)
+- p7zip-full (listing many archives)
+- p7zip-rar (listing rar archives)
+
+Supported categories:
+- Album
+- Comics
+- Discography
+- EBook
+- Empty
+- Font
+- Iso
+- Movie
+- PC
+- PS2
+- PS3
+- Series
+- Unknown
+- Wii
+- XBox
+
+Good categories should be widely used and detectable reliably.
+
+When reporting bugs or possible enhancements, such as a miscategorisation
+that could be prevented, include debug output (-vv) and a torrent file
+or a listing.
+
+"""
+
+# Figure out a better name
+from bb2008_torrents import TorrentFileError
+from bb2008_classify import (find_iter, seven_iter, istream_iter, torrent_files_iter, unix_basename, classify)
+
+import logging
+import optparse
+import subprocess
+import sys
+
+LOGGER = logging.getLogger(__name__)
+
+
+def main():
+    parser = optparse.OptionParser()
+    parser.add_option('--stdin',
+            action='store_true',
+            dest='stdin',
+            help='The release is listed on stdin. This is the default.',
+            )
+    parser.add_option('--find',
+            type='string',
+            dest='find',
+            metavar='DIRECTORY',
+            help='The release is the set of files below DIRECTORY.',
+            )
+    parser.add_option('--archive',
+            type='string',
+            dest='archive',
+            help='The release is the set of files in ARCHIVE.',
+            )
+    parser.add_option('--torrent',
+            type='string',
+            dest='torrent',
+            help='The release is a torrent.',
+            )
+    parser.add_option('--name',
+            type='string',
+            dest='name',
+            help='Name of the release',
+            )
+    parser.add_option('-v', '--verbose',
+            action='count',
+            dest='verbosity',
+            default=0,
+            help='Increase verbosity',
+            )
+
+    (options, args) = parser.parse_args()
+    # WARNING, INFO, DEBUG
+    log_level = logging.WARNING - 10 * options.verbosity
+    logging.basicConfig(level=log_level, format='%(levelname)s: %(message)s')
+
+    if args:
+        parser.print_help()
+        return 2
+    if len([o for o in [
+            options.stdin, options.find, options.archive, options.torrent,
+            ] if o]) > 1:
+        parser.print_help()
+        return 2
+
+    if options.find:
+        if not options.name:
+            options.name = unix_basename(options.find)
+        it = find_iter(options.find)
+    elif options.archive:
+        if not options.name:
+            options.name = unix_basename(options.archive)
+        it = seven_iter(options.archive)
+    elif options.torrent:
+        if not options.name:
+            options.name = unix_basename(options.torrent)
+        try:
+            it = torrent_files_iter(options.torrent)
+        except TorrentFileError: # XXX already logged
+            return 1
+    else:
+        it = istream_iter(sys.stdin)
+
+    try:
+        print classify(it, options.name)
+    except subprocess.CalledProcessError, e:
+        LOGGER.error(e)
+        return 1
+
+if __name__ == '__main__':
+    sys.exit(main())
+
+
