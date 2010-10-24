@@ -5,7 +5,7 @@ import logging
 
 LOGGER = logging.getLogger(__name__)
 
-try
+try:
     # python-libtorrent
     from libtorrent import bdecode, bencode
 except ImportError, e:
