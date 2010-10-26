@@ -24,9 +24,9 @@ def defset(line):
 # ogg could conceivably be video (oga is unambiguous)
 MUSIC_EXTS = defset('mp3 oga ogg flac m4a mpc ape wma')
 # mp4 could conceivably be audio (m4v is unambiguous)
-VID_EXTS = defset('avi mkv mpg mov ogm m4v mp4 m2ts vob rmvb wmv')
+VID_EXTS = defset('avi mkv mpg mov ogv ogm m4v mp4 m2ts vob rmvb wmv')
 
-FONT_EXTS = defset('otf ttf')
+FONT_EXTS = defset('otf ttf ttc pfb')
 ISO_EXTS = defset('iso nrg ccd b5i cdi')
 COMICBOOK_EXTS = defset('cbt cbr cbz')
 EBOOK_EXTS = defset('epub html htm chm rtf txt djvu pdf doc docx lrf mobi lit eps')
@@ -120,13 +120,14 @@ def seven_iter(fname):
         raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
-def classify(it, name):
+def classify_iter(it, name):
     size_max = -1
     ext_size_max = -1
     total_size = 0
     # Keys are either empty or start with a dot.
     size_by_ext = defaultdict(int)
     item_count_by_ext = defaultdict(int)
+    size_of_dir = defaultdict(int)
     common_prefix = None
     for (fname, size) in it:
         if common_prefix is not None:
@@ -138,10 +139,12 @@ def classify(it, name):
         if size > size_max:
             size_max = size
             size_max_item = fname
+
         dirname, basename = os.path.split(fname)
         if not basename:
             # fname is empty or ends with a slash.
             raise ValueError(fname)
+
         noext, ext = os.path.splitext(basename)
         if ext[1:] in TAR_EXTS and noext.endswith('.tar'):
             noext, _ = os.path.splitext(noext)
@@ -155,11 +158,16 @@ def classify(it, name):
             ext_size_max = ext_size
             ext_size_max_item = ext
 
+        size_of_dir[dirname] += size
+
     item_count_by_ext = dict(item_count_by_ext)
     size_by_ext = dict(size_by_ext)
 
     if size_max == -1: # No lines
         return 'Empty'
+
+    largest_dir = max(size_of_dir, key=lambda d: size_of_dir[d])
+    largest_dir_rel_weight = float(size_of_dir[largest_dir]) / total_size
 
     del (it, basename,
         dirname, ext, noext, size, ext_size, fname )
@@ -167,6 +175,7 @@ def classify(it, name):
     #LOGGER.debug(yaml.dump(locals()))
 
     if not ext_size_max_item:
+        LOGGER.warn('The bulk of the release has no file extension.')
         # The empty ext dominates
         return 'Unknown'
 
@@ -185,10 +194,10 @@ def classify(it, name):
     LOGGER.debug('Tokens searched for hints: %s', ' '.join(release_tokens))
 
     if ext_of_bulk in MUSIC_EXTS:
-        if count_of_bulk_by_ext > 20:
-            return 'Discography'
-        else:
+        if largest_dir_rel_weight > .7:
             return 'Album'
+        else:
+            return 'Discography'
     elif ext_of_bulk in COMICBOOK_EXTS:
         return 'Comics'
     elif ext_of_bulk in EBOOK_EXTS:
@@ -232,4 +241,38 @@ def classify(it, name):
             'Report a bug if you think it should be')
         return 'Unknown'
 
+class SourceKind(object):
+    directory = object()
+    torrent = object()
+    archive = object()
+
+class UnknownSourceKindError(ValueError):
+    pass
+
+def detect_kind(fname):
+    if os.path.isdir(fname):
+        return SourceKind.directory
+    prefix, ext = os.path.splitext(fname)
+    ext = ext.lower()
+    if ext == '.torrent':
+        return SourceKind.torrent
+    if ext[0] == '.' and ext[1:] in ARCHIVE_EXTS:
+        return SourceKind.archive
+    raise UnknownSourceKindError('Unknown release type for %s' % fname)
+
+def classify(fname, kind=None, name=None):
+    if kind is None:
+        kind = detect_kind(fname)
+
+    if name is None:
+        name = unix_basename(fname)
+
+    if kind == SourceKind.directory:
+        it = find_iter(fname)
+    elif kind == SourceKind.archive:
+        it = seven_iter(fname)
+    elif kind == SourceKind.torrent:
+        it = torrent_files_iter(fname)
+
+    return classify_iter(it, name)
 

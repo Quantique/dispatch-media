@@ -6,8 +6,8 @@
 Send downloaded media to its rightful place, according to its nature.
 
 This script looks for downloaded archives and torrents.
-Configure it in ~/.config/dispatch-media.conf
-Example below.
+See dispatch-media.conf for configuring it.
+
 
 Dependencies (some could be made optional):
 - python-libtorrent (reading .torrent files)
@@ -18,52 +18,13 @@ Dependencies (some could be made optional):
 - unrar (extracting rar archives)
 
 
-# ~/.config/dispatch-media.conf
-
-# Where content gets downloaded.
-# You may have several sources of each type.
-sources:
--   type: archives
-    # A directory that contains rar archives
-    search: ~/down/archives
-    # Look in subdirectories, but no deeper
-    depth: 2
-    action: extract
-
--   type: torrents
-    # Names of completed torrents
-    pattern: ~/rtorrent/done/*.torrent
-    # torrent content is downloaded as ${download}/${name-in-torrent}
-    download: ~/down
-    # hardlink, symlink-once, symlink-deep
-    action: symlink-deep
-
-places:
-    # The place to put recognized media.
-    # Valid categories each have a subdirectory.
-    basedir: ~/media
-
-    # Categories to autodispatch.
-    # Others will be skipped, use --verbose to see which.
-    accept: [album, discography, e-book, font, movie, series]
-
-    # Create category directory if it doesn't exist
-    autocreate: true
-
-    # Categories are lowercase plural
-    lowercase: true
-    pluralize: true
-
-    # Relocate some categories from their default names
-    # Can also be used to go outside basedir
-    albums: music/albums
-    discographies: music/discogs
+TODO:
+    A simple find source type for already extracted stuff.
 
 """
 
 import bb2008_classify
-from bb2008_classify import (
-        seven_iter, torrent_files_iter, unix_basename, classify)
+from bb2008_classify import SourceKind, classify
 from bb2008_common import iso8601_now
 from bb2008_torrents import read_torrent
 from bb2008_media_types import Media
@@ -84,6 +45,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 def link_once(orig, dest, symbolic):
+    if symbolic:
+        # For broken but correct symlinks
+        orig_rel = os.path.relpath(orig, os.path.dirname(dest))
+        if os.path.islink(dest) and os.readlink(dest) == orig_rel:
+            return
+
     if os.path.lexists(dest):
         if not os.path.exists(dest):
             LOGGER.warn(
@@ -94,8 +61,8 @@ def link_once(orig, dest, symbolic):
                     '%s already exists and doesn\'t point to %s, skipping',
                     dest, orig)
         return
+
     if symbolic:
-        orig_rel = os.path.relpath(orig, os.path.dirname(dest))
         os.symlink(orig_rel, dest)
     else:
         try:
@@ -280,70 +247,73 @@ def down_loc_of_torrent(tdata, down_base, use_rtorrent_meta=True):
         down_loc = os.path.join(down_base, name)
     return down_loc, name
 
-def build_locations(places_config):
-    lowercase = places_config['lowercase']
-    pluralize = places_config['pluralize']
+class Places(object):
+    def __init__(self, places_config):
+        lowercase = places_config['lowercase']
+        pluralize = places_config['pluralize']
 
-    accepted = places_config['accept']
-    accepted = set(Media.registry[cat] for cat in accepted)
+        accepted = places_config['accept']
+        accepted = set(Media.registry[cat] for cat in accepted)
 
-    basedir = os.path.expanduser(places_config['basedir'])
-    locations = {}
+        basedir = os.path.expanduser(places_config['basedir'])
+        self.locations = {}
 
-    for cat in accepted:
-        name = cat.name(lower=lowercase, plural=pluralize)
-        if name in places_config:
-            loc = os.path.expanduser(places_config[name])
-        else:
-            loc = name
-        loc = os.path.join(basedir, loc)
-        locations[cat] = loc
+        for cat in accepted:
+            name = cat.name(lower=lowercase, plural=pluralize)
+            if name in places_config:
+                loc = os.path.expanduser(places_config[name])
+            else:
+                loc = name
+            loc = os.path.join(basedir, loc)
+            self.locations[cat] = loc
 
-    return locations
+        self.autocreate = places_config['autocreate']
 
-def lookup_cat(kind, path, locations, autocreate):
-    try:
-        if kind == 'archive':
-            it = seven_iter(path)
-        elif kind == 'torrent':
-            try:
-                it = torrent_files_iter(path)
-            except TorrentFileError: # XXX already logged
+    def dest_base_of_cat(self, cat, fname):
+        if cat not in self.locations:
+            # Not an accepted category, see the places.accept setting
+            LOGGER.info('Skipping %s %s', cat.name(lower=True), fname)
+            return
+        dest_base = self.locations[cat]
+        if not os.path.exists(dest_base):
+            if self.autocreate:
+                LOGGER.info('Creating %s', dest_base)
+                os.makedirs(dest_base, mode=0700)
+            else:
+                LOGGER.warn('Skipping %s, please create %s',
+                        fname, dest_base)
                 return
-        try:
-            cat = classify(it, unix_basename(path))
-        except subprocess.CalledProcessError, e:
-            LOGGER.warn(e)
-            return
+        return dest_base
 
-    except subprocess.CalledProcessError:
-        LOGGER.warn('Error classifying %s %s', kind, path)
+def lookup_cat(kind, fname, places):
+    try:
+        cat = classify(fname, kind)
+    except subprocess.CalledProcessError, e:
+        LOGGER.warn(e)
         return
+    except TorrentFileError, e:
+        LOGGER.warn(e)
+        return
+
     if cat in ('Unknown', 'Empty', ):
-        LOGGER.info('Skipping %s %s %s', cat, kind, path)
+        LOGGER.info('Skipping %s %s', cat.lower(), fname)
         return
-    cat = Media.registry[cat]
-    if cat not in locations:
-        LOGGER.info('Skipping %s %s %s', cat.name(), kind, path)
-        return
-    dest_base = locations[cat]
-    if not os.path.exists(dest_base):
-        if autocreate:
-            LOGGER.info('Creating %s', dest_base)
-            os.makedirs(dest_base, mode=0700)
-        else:
-            LOGGER.warn('Skipping %s %s, please create %s',
-                    kind, path, dest_base)
-            return
-    return dest_base
 
-def dispatch_torrents(torrents_config, locations, autocreate):
+    cat = Media.registry[cat]
+    return places.dest_base_of_cat(cat, fname)
+
+def dispatch_torrents(torrents_config, places):
     torrents_pattern = os.path.expanduser(torrents_config['pattern'])
     down_base = os.path.expanduser(torrents_config['download'])
+    if not os.path.exists(down_base):
+        LOGGER.error(
+                'Download directory %s doesn\'t exist', down_base)
+        return
     action = TORRENT_ACTIONS[torrents_config['action']]
 
     for torrent in glob.iglob(torrents_pattern):
-        dest_base = lookup_cat('torrent', torrent, locations, autocreate)
+        dest_base = lookup_cat(SourceKind.torrent,
+                torrent, places)
         if dest_base is None:
             continue
         tdata = read_torrent(torrent)
@@ -351,14 +321,18 @@ def dispatch_torrents(torrents_config, locations, autocreate):
         dest_loc = os.path.join(dest_base, name)
         action(down_loc, dest_loc)
 
-def dispatch_archives(archives_config, locations, autocreate):
+def dispatch_archives(archives_config, places):
     search_base = os.path.expanduser(archives_config['search'])
+    if not os.path.exists(search_base):
+        LOGGER.error(
+                'Archives directory %s doesn\'t exist', search_base)
+        return
     depth = archives_config['depth']
     action = ARCHIVE_ACTIONS[archives_config['action']]
 
     for rr in iter_rar_releases(search_base, depth):
-        dest_base = lookup_cat('archive', rr.archive_path,
-                locations, autocreate)
+        dest_base = lookup_cat(SourceKind.archive,
+                rr.archive_path, places)
         if dest_base is None:
             continue
         action(rr, dest_base)
@@ -400,14 +374,13 @@ def main():
                 options.config)
         return 3
 
-    autocreate = config['places']['autocreate']
-    locations = build_locations(config['places'])
+    places = Places(config['places'])
 
     for source in config['sources']:
         if source['type'] == 'archives':
-            dispatch_archives(source, locations, autocreate)
+            dispatch_archives(source, places)
         elif source['type'] == 'torrents':
-            dispatch_torrents(source, locations, autocreate)
+            dispatch_torrents(source, places)
         else:
             LOGGER.error('Invalid source type %s', source['type'])
 

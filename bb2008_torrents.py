@@ -25,13 +25,15 @@ def read_torrent(fname):
     with open(fname) as fhandle:
         fdata = fhandle.read()
     if not fdata: # Coerce to bool -> test for emptiness
-        LOGGER.error("Torrent file empty: %s", fname)
-        raise TorrentFileError(fname)
+        raise TorrentFileError("Torrent file empty: %s" % fname)
     try:
-        return bdecode(fdata)
+        r = bdecode(fdata)
+        if r is None: # libtorrent doesn't report errors properly
+            raise ValueError
     except ValueError, exn:
-        LOGGER.exception("Couldn't parse torrent: %s", fname)
-        raise TorrentFileError(fname)
+        raise TorrentFileError("Couldn't parse torrent: %s" % fname)
+    else:
+        return r
 
 def require_sane_encoding(dct):
     """
