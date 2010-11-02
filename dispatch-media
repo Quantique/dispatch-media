@@ -17,16 +17,12 @@ Dependencies (some could be made optional):
 - dtrx (extracting archives)
 - unrar (extracting rar archives)
 
-
-TODO:
-    A simple find source type for already extracted stuff.
-
 """
 
 import bb2008_classify
-from bb2008_classify import SourceKind, classify
+from bb2008_classify import SourceKind, classify, unix_basename
 from bb2008_common import iso8601_now
-from bb2008_torrents import read_torrent
+from bb2008_torrents import read_torrent, TorrentFileError
 from bb2008_media_types import Media
 
 import errno
@@ -108,12 +104,15 @@ def symlink_deep(orig, dest):
 def hardlink_deep(orig, dest):
     link_deep(orig, dest, symbolic=False)
 
-# FS actions really
-TORRENT_ACTIONS = {
+
+FS_ACTIONS = {
     'symlink-once': symlink_once,
     'symlink-deep': symlink_deep,
     'hardlink':     hardlink_deep,
     }
+
+TORRENT_ACTIONS = FS_ACTIONS
+DIR_ACTIONS = FS_ACTIONS
 
 
 STRIP_RAR_SUFFIX_RE = re.compile(r'(.*?)(\.part0*1)?\.rar$', re.I)
@@ -293,6 +292,12 @@ def lookup_cat(kind, fname, places):
         return
     except TorrentFileError, e:
         LOGGER.warn(e)
+        # Some errors don't have the fname, workaround
+        LOGGER.warn('Skipping torrent %s', fname)
+        return
+    except UnicodeDecodeError, e:
+        LOGGER.info(e)
+        LOGGER.warn('Skipping torrent with bad character encoding %s', fname)
         return
 
     if cat in ('Unknown', 'Empty', ):
@@ -302,16 +307,16 @@ def lookup_cat(kind, fname, places):
     cat = Media.registry[cat]
     return places.dest_base_of_cat(cat, fname)
 
-def dispatch_torrents(torrents_config, places):
-    torrents_pattern = os.path.expanduser(torrents_config['pattern'])
-    down_base = os.path.expanduser(torrents_config['download'])
+def dispatch_torrents(source_config, places):
+    pattern = os.path.expanduser(source_config['pattern'])
+    down_base = os.path.expanduser(source_config['download'])
     if not os.path.exists(down_base):
         LOGGER.error(
                 'Download directory %s doesn\'t exist', down_base)
         return
-    action = TORRENT_ACTIONS[torrents_config['action']]
+    action = TORRENT_ACTIONS[source_config['action']]
 
-    for torrent in glob.iglob(torrents_pattern):
+    for torrent in glob.iglob(pattern):
         dest_base = lookup_cat(SourceKind.torrent,
                 torrent, places)
         if dest_base is None:
@@ -320,6 +325,18 @@ def dispatch_torrents(torrents_config, places):
         down_loc, name = down_loc_of_torrent(tdata, down_base)
         dest_loc = os.path.join(dest_base, name)
         action(down_loc, dest_loc)
+
+def dispatch_directories(source_config, places):
+    pattern = os.path.expanduser(source_config['pattern'])
+    action = DIR_ACTIONS[source_config['action']]
+    for dcty in glob.iglob(pattern):
+        dest_base = lookup_cat(SourceKind.directory,
+                dcty, places)
+        if dest_base is None:
+            continue
+        name = unix_basename(dcty)
+        dest_loc = os.path.join(dest_base, name)
+        action(dcty, dest_loc)
 
 def dispatch_archives(archives_config, places):
     search_base = os.path.expanduser(archives_config['search'])
@@ -381,6 +398,8 @@ def main():
             dispatch_archives(source, places)
         elif source['type'] == 'torrents':
             dispatch_torrents(source, places)
+        elif source['type'] == 'directories':
+            dispatch_directories(source, places)
         else:
             LOGGER.error('Invalid source type %s', source['type'])
 

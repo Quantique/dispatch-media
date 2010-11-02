@@ -1,7 +1,7 @@
 # Copyright 2010 Quantique. Licence: GPL3+
 
 # Figure out a better name
-from bb2008_torrents import read_torrent
+from bb2008_torrents import read_torrent, torrent_files
 
 from collections import defaultdict
 import logging
@@ -68,16 +68,7 @@ def unix_basename(path):
 
 def torrent_files_iter(fname):
     dct = read_torrent(fname)
-    base = dct['info']['name']
-    if 'files' in dct['info']: # multi
-        for finfo in dct['info']['files']:
-            path = os.path.join(base, *finfo['path'])
-            length = finfo['length']
-            yield path, length
-    else:
-        path = base
-        length = dct['info']['length']
-        yield path, length
+    return torrent_files(dct)
 
 def istream_iter(istream):
     for line in istream:

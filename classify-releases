@@ -54,7 +54,9 @@ TODO:
 from bb2008_torrents import TorrentFileError
 from bb2008_classify import SourceKind, UnknownSourceKindError, classify
 
+import codecs
 import collections
+import locale
 import logging
 import optparse
 import os.path
@@ -65,6 +67,13 @@ import yaml
 LOGGER = logging.getLogger(__name__)
 
 def main():
+    # Unbreak stdio encodings. is_unicode will be used by YAML.
+    locale.setlocale(locale.LC_ALL, '')
+    encoding = locale.getpreferredencoding(False)
+    sys.stdout = codecs.getwriter(encoding)(sys.stdout)
+    sys.stderr = codecs.getwriter(encoding)(sys.stderr)
+    is_unicode = encoding.lower().startswith('utf')
+
     parser = optparse.OptionParser()
     parser.add_option('--dirs',
             action='store_const', dest='kind', const=SourceKind.directory,
@@ -95,6 +104,7 @@ def main():
             )
 
     (options, args) = parser.parse_args()
+
     # WARNING, INFO, DEBUG
     log_level = logging.WARNING - 10 * options.verbosity
     logging.basicConfig(level=log_level, format='%(levelname)s: %(message)s')
@@ -104,7 +114,9 @@ def main():
         return 2
 
     groups = collections.defaultdict(list)
+
     for arg in args:
+        arg = arg.decode(encoding)
         try:
             cat = classify(arg, options.kind)
         except subprocess.CalledProcessError, e:
@@ -122,10 +134,12 @@ def main():
         if options.group:
             groups[cat].append(arg)
         else:
-            yaml.dump({arg: cat}, sys.stdout, default_flow_style=False)
+            yaml.safe_dump({arg: cat}, sys.stdout,
+                    default_flow_style=False, allow_unicode=is_unicode)
 
     if options.group:
-        yaml.dump(dict(groups), sys.stdout, default_flow_style=False)
+        yaml.safe_dump(dict(groups), sys.stdout,
+                default_flow_style=False, allow_unicode=is_unicode)
 
 if __name__ == '__main__':
     sys.exit(main())
