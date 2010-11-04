@@ -24,7 +24,6 @@ Supported categories:
 - Comics
 - Discography
 - EBook
-- Empty
 - Font
 - Iso
 - Movie
@@ -32,9 +31,12 @@ Supported categories:
 - PS2
 - PS3
 - Series
-- Unknown
 - Wii
 - XBox
+Special categories:
+- Archive
+- Empty
+- Unknown
 
 Good categories should be widely used and detectable reliably.
 
@@ -118,7 +120,7 @@ def main():
     for arg in args:
         arg = arg.decode(encoding)
         try:
-            cat = classify(arg, options.kind)
+            cat = classify(arg, options.kind).name()
         except subprocess.CalledProcessError, e:
             LOGGER.warn(e)
             continue

@@ -13,17 +13,24 @@ Dependencies (some could be made optional):
 - python-libtorrent (reading .torrent files)
 - python-yaml (configuration)
 - p7zip-full (listing many archives)
-- p7zip-rar (listing rar archives)
 - dtrx (extracting archives)
+- rsync (efficient copying)
+Non-free:
+- p7zip-rar (listing rar archives)
 - unrar (extracting rar archives)
 
+TODO:
+    Support relocating torrents.
+    This is client-specific and could be done with specialized sources.
+    For example, rtorrent stores paths in enriched torrent files
+    in its session directory.
 """
 
 import bb2008_classify
 from bb2008_classify import SourceKind, classify, unix_basename
 from bb2008_common import iso8601_now
 from bb2008_torrents import read_torrent, TorrentFileError
-from bb2008_media_types import Media
+from bb2008_media_types import Media, Unknown, Empty, Archive
 
 import errno
 import glob
@@ -32,6 +39,7 @@ import optparse
 import os
 import os.path
 import re
+import shutil
 import subprocess
 import sys
 import yaml
@@ -42,7 +50,7 @@ LOGGER = logging.getLogger(__name__)
 
 def link_once(orig, dest, symbolic):
     if symbolic:
-        # For broken but correct symlinks
+        # The samefile test won't work for broken yet correct symlinks
         orig_rel = os.path.relpath(orig, os.path.dirname(dest))
         if os.path.islink(dest) and os.readlink(dest) == orig_rel:
             return
@@ -104,15 +112,30 @@ def symlink_deep(orig, dest):
 def hardlink_deep(orig, dest):
     link_deep(orig, dest, symbolic=False)
 
+def move_once(orig, dest):
+    if os.path.lexists(dest):
+        LOGGER.warn(
+                '%s already exists, skipping move of %s',
+                dest, orig)
+        return
+    # DWIM workaround: this works OK if dest doesn't exist
+    shutil.move(orig, dest)
+
+def rsync_once(orig, dest):
+    # DWIM workaround
+    if os.path.isdir(orig):
+        orig += '/'
+    subprocess.check_call([ 'rsync', '-ax', orig, dest, ])
 
 FS_ACTIONS = {
     'symlink-once': symlink_once,
     'symlink-deep': symlink_deep,
     'hardlink':     hardlink_deep,
+    'rsync':        rsync_once,
     }
 
-TORRENT_ACTIONS = FS_ACTIONS
-DIR_ACTIONS = FS_ACTIONS
+TORRENT_ACTIONS = dict(FS_ACTIONS)
+DIR_ACTIONS = dict(move=move_once, **FS_ACTIONS)
 
 
 STRIP_RAR_SUFFIX_RE = re.compile(r'(.*?)(\.part0*1)?\.rar$', re.I)
@@ -191,14 +214,16 @@ def iter_rar_releases(basedir, depth):
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(cmd, proc.returncode)
 
-def extract_archive(rr, dest_base):
+def extract_archive(rr, dest_base, move_archive_on_success=True):
     logname = rr.aux_name(EXTRACT_LOG)
 
-    # This check is a bit redundant now that we move to extract-bak
-    # and prune the search.
+    # This check is necessary since we don't always move to EXTRACT_BAK,
+    # for the evil people who torrent archives.
+    # The log is only created on success, so an existence check is enough.
     if logname in rr.aux_files:
-        LOGGER.info('Archive %s has been extracted, continuing anyway',
+        LOGGER.info('Archive %s has already been extracted, skipping',
                 rr.archive_path)
+        return
 
     # List the files so we know where they were extracted.
     cmd = [ 'dtrx', '-nv', '--', os.path.abspath(rr.archive_path) ]
@@ -219,6 +244,9 @@ def extract_archive(rr, dest_base):
         yaml.dump(
                 [{'extracted-to': dtrx_dest, 'date': iso8601_now(), }],
                 log, default_flow_style=False)
+
+    if not move_archive_on_success:
+        return
     extract_bak = rr.aux_path(EXTRACT_BAK)
     try:
         os.mkdir(extract_bak)
@@ -300,11 +328,17 @@ def lookup_cat(kind, fname, places):
         LOGGER.warn('Skipping torrent with bad character encoding %s', fname)
         return
 
-    if cat in ('Unknown', 'Empty', ):
-        LOGGER.info('Skipping %s %s', cat.lower(), fname)
+    if cat in (Unknown, Empty):
+        LOGGER.info('Skipping %s %s', cat.name(lower=True), fname)
         return
 
-    cat = Media.registry[cat]
+    if cat is Archive:
+        if kind is SourceKind.torrent:
+            LOGGER.info('Skipping nested archive referenced by %s', fname)
+        else:
+            LOGGER.info('Skipping nested archive inside %s', fname)
+        return
+
     return places.dest_base_of_cat(cat, fname)
 
 def dispatch_torrents(source_config, places):
@@ -346,13 +380,14 @@ def dispatch_archives(archives_config, places):
         return
     depth = archives_config['depth']
     action = ARCHIVE_ACTIONS[archives_config['action']]
+    move_archive_on_success = archives_config['move-extracted']
 
     for rr in iter_rar_releases(search_base, depth):
         dest_base = lookup_cat(SourceKind.archive,
                 rr.archive_path, places)
         if dest_base is None:
             continue
-        action(rr, dest_base)
+        action(rr, dest_base, move_archive_on_success=move_archive_on_success)
 
 
 DEFAULT_CONF = '~/.config/dispatch-media.conf'
@@ -394,14 +429,18 @@ def main():
     places = Places(config['places'])
 
     for source in config['sources']:
-        if source['type'] == 'archives':
+        stype = source['type']
+        if not source.get('enable', True):
+            LOGGER.info('Skipping disabled %s source', stype)
+            continue
+        if stype == 'archives':
             dispatch_archives(source, places)
-        elif source['type'] == 'torrents':
+        elif stype == 'torrents':
             dispatch_torrents(source, places)
-        elif source['type'] == 'directories':
+        elif stype == 'directories':
             dispatch_directories(source, places)
         else:
-            LOGGER.error('Invalid source type %s', source['type'])
+            LOGGER.error('Invalid source type %s', stype)
 
 if __name__ == '__main__':
     sys.exit(main())

@@ -35,6 +35,10 @@ class Media(AutoName):
                 cls.registry[cls.name(plural=True)] = cls
                 cls.registry[cls.name(plural=True, lower=True)] = cls
 
+class Empty(AutoName): pass
+class Unknown(AutoName): pass
+class Archive(AutoName): pass
+
 
 class Album(Media): pass
 class Comics(Media): pass

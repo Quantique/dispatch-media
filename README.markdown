@@ -33,7 +33,7 @@ An example configuration is provided; edit it and put it in `~/.config`.
 
 On Debian/Ubuntu, requirements can be installed with:
 
-    sudo aptitude install python-libtorrent python-yaml p7zip-rar dtrx unrar
+    sudo aptitude install python-libtorrent python-yaml rsync dtrx p7zip-rar unrar
 
 ## Installation
 

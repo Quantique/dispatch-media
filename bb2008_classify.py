@@ -2,6 +2,7 @@
 
 # Figure out a better name
 from bb2008_torrents import read_torrent, torrent_files
+import bb2008_media_types as MT
 
 from collections import defaultdict
 import logging
@@ -155,7 +156,7 @@ def classify_iter(it, name):
     size_by_ext = dict(size_by_ext)
 
     if size_max == -1: # No lines
-        return 'Empty'
+        return MT.Empty
 
     largest_dir = max(size_of_dir, key=lambda d: size_of_dir[d])
     largest_dir_rel_weight = float(size_of_dir[largest_dir]) / total_size
@@ -168,7 +169,7 @@ def classify_iter(it, name):
     if not ext_size_max_item:
         LOGGER.warn('The bulk of the release has no file extension.')
         # The empty ext dominates
-        return 'Unknown'
+        return MT.Unknown
 
     ext_of_bulk = ext_size_max_item[1:].lower()
     count_of_bulk_by_ext = item_count_by_ext[ext_size_max_item]
@@ -186,43 +187,43 @@ def classify_iter(it, name):
 
     if ext_of_bulk in MUSIC_EXTS:
         if largest_dir_rel_weight > .7:
-            return 'Album'
+            return MT.Album
         else:
-            return 'Discography'
+            return MT.Discography
     elif ext_of_bulk in COMICBOOK_EXTS:
-        return 'Comics'
+        return MT.Comics
     elif ext_of_bulk in EBOOK_EXTS:
-        return 'EBook'
+        return MT.EBook
     elif ext_of_bulk in FONT_EXTS:
-        return 'Font'
+        return MT.Font
     elif ext_of_bulk in ISO_EXTS \
             or (ext_of_bulk == 'bin' \
                     and item_count_by_ext['.cue'] == item_count_by_ext['.bin']):
         platform_hints = intersect_keepcase(GAME_PLATFORMS, release_tokens)
         if len(platform_hints) == 1:
-            return platform_hints.pop()
-        return 'Iso'
+            return MT.Media.registry[platform_hints.pop()]
+        return MT.Iso
     elif ext_of_bulk in VID_EXTS:
         series_hints = SERIES_HINTS.intersection(release_tokens)
         movie_hints = MOVIE_HINTS.intersection(release_tokens)
         if len([hint for hint in (series_hints, movie_hints) if hint]) != 1:
             if count_of_bulk_by_ext > 3:
-                return 'Series'
+                return MT.Series
             else:
-                return 'Movie'
+                return MT.Movie
         elif movie_hints:
-            return 'Movie'
+            return MT.Movie
         elif series_hints:
-            return 'Series'
+            return MT.Series
         else:
             assert False
     elif ext_of_bulk in ARCHIVE_EXTS:
         # We don't know what the archive contains.
         # This design works on file names.
-        return 'Unknown'
+        return MT.Archive
     elif ext_of_bulk in AMBIGUOUS_EXTS:
         # No way to guess
-        return 'Unknown'
+        return MT.Unknown
     else:
         # Invite to submit a bug report?
         LOGGER.warn(
@@ -230,7 +231,7 @@ def classify_iter(it, name):
             ext_of_bulk)
         LOGGER.info(
             'Report a bug if you think it should be')
-        return 'Unknown'
+        return MT.Unknown
 
 class SourceKind(object):
     directory = object()
