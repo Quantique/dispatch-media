@@ -14,7 +14,7 @@ directory refers to.
 
 
 `dispatch-media` runs configurable actions on downloaded archives
-and torrents. It extracts archives and links torrent files to
+and torrents. It extracts archives and links torrented files to
 a content-appropriate location. It uses the same algorithm as
 classify-releases to decide where files should be dispatched.
 

@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 # vim: set fileencoding=utf-8 : -*- coding: utf-8 -*
 # Copyright 2010 Quantique. Licence: GPL3+
 # ~/bin/classify-releases
@@ -52,9 +52,8 @@ TODO:
 
 """
 
-# Figure out a better name
-from bb2008_torrents import TorrentFileError
-from bb2008_classify import SourceKind, UnknownSourceKindError, classify
+from dispatchmedia.torrents import TorrentFileError
+from dispatchmedia.classify import Release, Torrent, Directory, Archive, UnknownReleaseKindError, classify
 
 import codecs
 import collections
@@ -78,15 +77,15 @@ def main():
 
     parser = optparse.OptionParser()
     parser.add_option('--dirs',
-            action='store_const', dest='kind', const=SourceKind.directory,
+            action='store_const', dest='kind', const=Directory,
             help='Classify directories.',
             )
     parser.add_option('--archives',
-            action='store_const', dest='kind', const=SourceKind.archive,
+            action='store_const', dest='kind', const=Archive,
             help='Classify archives.',
             )
     parser.add_option('--torrents',
-            action='store_const', dest='kind', const=SourceKind.torrent,
+            action='store_const', dest='kind', const=Torrent,
             help='Classify torrents.',
             )
     parser.add_option('--auto',
@@ -117,26 +116,30 @@ def main():
 
     groups = collections.defaultdict(list)
 
-    for arg in args:
-        arg = arg.decode(encoding)
+    for fname in args:
+        fname = fname.decode(encoding)
         try:
-            cat = classify(arg, options.kind).name()
+            if options.kind is None:
+                rlz = Release.from_fname(fname)
+            else:
+                rlz = options.kind(fname)
+            cat = classify(rlz).name()
         except subprocess.CalledProcessError, e:
             LOGGER.warn(e)
             continue
         except TorrentFileError, e:
             LOGGER.warn(e)
             continue
-        except UnknownSourceKindError, e:
+        except UnknownReleaseKindError, e:
             LOGGER.warn(e)
             LOGGER.info(
                 'You can use command-line flags to specify the release type')
             continue
 
         if options.group:
-            groups[cat].append(arg)
+            groups[cat].append(fname)
         else:
-            yaml.safe_dump({arg: cat}, sys.stdout,
+            yaml.safe_dump({fname: cat}, sys.stdout,
                     default_flow_style=False, allow_unicode=is_unicode)
 
     if options.group:

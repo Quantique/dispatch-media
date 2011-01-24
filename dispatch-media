@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 # Copyright 2010 Quantique. Licence: GPL3+
 # ~/bin/dispatch-media
 
@@ -24,13 +24,24 @@ TODO:
     This is client-specific and could be done with specialized sources.
     For example, rtorrent stores paths in enriched torrent files
     in its session directory.
+
+    Keep timestamps. Or at least, loop through files in timestamp order.
+
+    A special mode for single-file torrents. eg, music -> tracks.
 """
 
-import bb2008_classify
-from bb2008_classify import SourceKind, classify, unix_basename
-from bb2008_common import iso8601_now
-from bb2008_torrents import read_torrent, TorrentFileError
-from bb2008_media_types import Media, Unknown, Empty, Archive
+# Unbreak stdio encodings. See setencoding in site.py
+# The less intrusive getwriter method fails when output is a file.
+import imp, sys
+imp.reload(sys)
+import locale
+sys.setdefaultencoding(locale.getdefaultlocale()[1])
+
+
+import dispatchmedia.classify as CL
+from dispatchmedia.common import iso8601_now, ensure_dir
+from dispatchmedia.torrents import TorrentFileError
+from dispatchmedia.media_types import Media, Unknown, Empty, Archive
 
 import errno
 import glob
@@ -77,42 +88,25 @@ def link_once(orig, dest, symbolic):
             # chattr +i prevents hardlinking, sadly
             LOGGER.warn('%s linking %s to %s', e.strerror, orig, dest)
 
-def link_deep(orig, dest, symbolic):
+def link_deep(release, orig, dest, symbolic):
     """
     To delete a symlink tree:
         find \( -type l -o \( -type d -empty \) \) -delete
     """
 
-    if not os.path.isdir(orig):
-        link_once(orig, dest, symbolic)
-        return
-    for (dirpath, dirnames, filenames) in os.walk(orig):
-        if dirpath == orig:
-            d2 = dest
-        else:
-            d2 = os.path.join(dest, os.path.relpath(dirpath, orig))
-        if os.path.exists(d2):
-            if not os.path.isdir(d2):
-                LOGGER.warn('%s already exists and isn\'t a directory', d2)
-                # Prevent recursion
-                dirnames[:] = []
-                continue
-        else:
-            os.mkdir(d2)
-        for fname in filenames:
-            link_once(os.path.join(dirpath, fname),
-                    os.path.join(d2, fname), symbolic)
+    for (src, dest) in release.walk_lockstep(orig, dest):
+        link_once(src, dest, symbolic)
 
-def symlink_once(orig, dest):
+def symlink_once(release, orig, dest):
     link_once(orig, dest, symbolic=True)
 
-def symlink_deep(orig, dest):
-    link_deep(orig, dest, symbolic=True)
+def symlink_deep(release, orig, dest):
+    link_deep(release, orig, dest, symbolic=True)
 
-def hardlink_deep(orig, dest):
-    link_deep(orig, dest, symbolic=False)
+def hardlink_deep(release, orig, dest):
+    link_deep(release, orig, dest, symbolic=False)
 
-def move_once(orig, dest):
+def move_once(release, orig, dest):
     if os.path.lexists(dest):
         LOGGER.warn(
                 '%s already exists, skipping move of %s',
@@ -121,11 +115,11 @@ def move_once(orig, dest):
     # DWIM workaround: this works OK if dest doesn't exist
     shutil.move(orig, dest)
 
-def rsync_once(orig, dest):
+def rsync_once(release, orig, dest):
     # DWIM workaround
     if os.path.isdir(orig):
         orig += '/'
-    subprocess.check_call([ 'rsync', '-ax', orig, dest, ])
+    subprocess.check_call([ 'rsync', '-ax', '--', orig, dest, ])
 
 FS_ACTIONS = {
     'symlink-once': symlink_once,
@@ -214,7 +208,7 @@ def iter_rar_releases(basedir, depth):
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(cmd, proc.returncode)
 
-def extract_archive(rr, dest_base, move_archive_on_success=True):
+def extract_archive(rr, dest_parent, move_archive_on_success=True):
     logname = rr.aux_name(EXTRACT_LOG)
 
     # This check is necessary since we don't always move to EXTRACT_BAK,
@@ -228,13 +222,13 @@ def extract_archive(rr, dest_base, move_archive_on_success=True):
     # List the files so we know where they were extracted.
     cmd = [ 'dtrx', '-nv', '--', os.path.abspath(rr.archive_path) ]
     proc = subprocess.Popen(cmd,
-            cwd=dest_base, stdout=subprocess.PIPE)
+            cwd=dest_parent, stdout=subprocess.PIPE)
 
     line = next(proc.stdout)
     dtrx_dest = os.path.normpath(line.rstrip())
     if os.path.sep in dtrx_dest:
         dtrx_dest = dtrx_dest[:dtrx_dest.index(os.path.sep)]
-    dtrx_dest = os.path.join(dest_base, dtrx_dest)
+    dtrx_dest = os.path.join(dest_parent, dtrx_dest)
 
     proc.wait()
     if proc.returncode != 0:
@@ -248,31 +242,17 @@ def extract_archive(rr, dest_base, move_archive_on_success=True):
     if not move_archive_on_success:
         return
     extract_bak = rr.aux_path(EXTRACT_BAK)
-    try:
-        os.mkdir(extract_bak)
-    except OSError, e:
-        if e.errno != errno.EEXIST:
-            raise
+    ensure_dir(extract_bak)
     for part in rr.archive_files:
         os.rename(rr.path(part), os.path.join(extract_bak, part))
 
 
 
 # Not the same prototype as TORRENT_ACTIONS!
-# One takes dest, the other dest_base
+# Takes an extra move_archive_on_success keyword argument
 ARCHIVE_ACTIONS = {
     'extract': extract_archive,
     }
-
-def down_loc_of_torrent(tdata, down_base, use_rtorrent_meta=True):
-    name = tdata['info']['name']
-    if use_rtorrent_meta and 'rtorrent' in tdata:
-        down_loc = os.path.expanduser(tdata['rtorrent']['directory'])
-        if 'files' not in tdata['info']:
-            down_loc = os.path.join(down_loc, name)
-    else:
-        down_loc = os.path.join(down_base, name)
-    return down_loc, name
 
 class Places(object):
     def __init__(self, places_config):
@@ -301,45 +281,45 @@ class Places(object):
             # Not an accepted category, see the places.accept setting
             LOGGER.info('Skipping %s %s', cat.name(lower=True), fname)
             return
-        dest_base = self.locations[cat]
-        if not os.path.exists(dest_base):
+        dest_parent = self.locations[cat]
+        if not os.path.exists(dest_parent):
             if self.autocreate:
-                LOGGER.info('Creating %s', dest_base)
-                os.makedirs(dest_base, mode=0700)
+                LOGGER.info('Creating %s', dest_parent)
+                os.makedirs(dest_parent, mode=0700)
             else:
                 LOGGER.warn('Skipping %s, please create %s',
-                        fname, dest_base)
+                        fname, dest_parent)
                 return
-        return dest_base
+        return dest_parent
 
-def lookup_cat(kind, fname, places):
+def lookup_cat(release, places):
     try:
-        cat = classify(fname, kind)
+        cat = CL.classify(release)
     except subprocess.CalledProcessError, e:
         LOGGER.warn(e)
         return
     except TorrentFileError, e:
         LOGGER.warn(e)
         # Some errors don't have the fname, workaround
-        LOGGER.warn('Skipping torrent %s', fname)
+        LOGGER.warn('Skipping torrent %s', release.fname)
         return
     except UnicodeDecodeError, e:
         LOGGER.info(e)
-        LOGGER.warn('Skipping torrent with bad character encoding %s', fname)
+        LOGGER.warn('Skipping torrent with bad character encoding %s', release.fname)
         return
 
     if cat in (Unknown, Empty):
-        LOGGER.info('Skipping %s %s', cat.name(lower=True), fname)
+        LOGGER.info('Skipping %s %s', cat.name(lower=True), release.fname)
         return
 
     if cat is Archive:
-        if kind is SourceKind.torrent:
-            LOGGER.info('Skipping nested archive referenced by %s', fname)
+        if isinstance(release, CL.Torrent):
+            LOGGER.info('Skipping nested archive referenced by %s', release.fname)
         else:
-            LOGGER.info('Skipping nested archive inside %s', fname)
+            LOGGER.info('Skipping nested archive inside %s', release.fname)
         return
 
-    return places.dest_base_of_cat(cat, fname)
+    return places.dest_base_of_cat(cat, release.fname)
 
 def dispatch_torrents(source_config, places):
     pattern = os.path.expanduser(source_config['pattern'])
@@ -351,26 +331,50 @@ def dispatch_torrents(source_config, places):
     action = TORRENT_ACTIONS[source_config['action']]
 
     for torrent in glob.iglob(pattern):
-        dest_base = lookup_cat(SourceKind.torrent,
-                torrent, places)
-        if dest_base is None:
+        release = CL.Torrent(torrent)
+
+        dest_parent = lookup_cat(release, places)
+        if dest_parent is None:
             continue
-        tdata = read_torrent(torrent)
-        down_loc, name = down_loc_of_torrent(tdata, down_base)
-        dest_loc = os.path.join(dest_base, name)
-        action(down_loc, dest_loc)
+        down_loc = release.down_loc(default_down_base=down_base)
+        action(release, down_loc, dest_parent)
+
+        # Could be large
+        del release
+
+def dispatch_transmission(source_config, places):
+    confdir = os.path.expanduser(source_config['confdir'])
+    if not os.path.exists(confdir):
+        LOGGER.error(
+                'Transmission configuration directory %s doesn\'t exist',
+                confdir)
+        return
+    action = TORRENT_ACTIONS[source_config['action']]
+
+    tdir = os.path.join(confdir, 'torrents')
+    for tbasename in os.listdir(tdir):
+        fname = os.path.join(tdir, tbasename)
+        release = CL.TransmissionTorrent(fname, confdir)
+
+        dest_parent = lookup_cat(release, places)
+        if dest_parent is None:
+            continue
+        down_loc = release.down_loc(default_down_base=None)
+        print down_loc
+        #action(release, down_loc, dest_parent)
+
+        # Could be large
+        del release
 
 def dispatch_directories(source_config, places):
     pattern = os.path.expanduser(source_config['pattern'])
     action = DIR_ACTIONS[source_config['action']]
-    for dcty in glob.iglob(pattern):
-        dest_base = lookup_cat(SourceKind.directory,
-                dcty, places)
-        if dest_base is None:
+    for dname in glob.iglob(pattern):
+        release = CL.Directory(dname)
+        dest_parent = lookup_cat(release, places)
+        if dest_parent is None:
             continue
-        name = unix_basename(dcty)
-        dest_loc = os.path.join(dest_base, name)
-        action(dcty, dest_loc)
+        action(release, dname, dest_parent)
 
 def dispatch_archives(archives_config, places):
     search_base = os.path.expanduser(archives_config['search'])
@@ -383,11 +387,11 @@ def dispatch_archives(archives_config, places):
     move_archive_on_success = archives_config['move-extracted']
 
     for rr in iter_rar_releases(search_base, depth):
-        dest_base = lookup_cat(SourceKind.archive,
-                rr.archive_path, places)
-        if dest_base is None:
+        release = CL.Archive(rr.archive_path)
+        dest_parent = lookup_cat(release, places)
+        if dest_parent is None:
             continue
-        action(rr, dest_base, move_archive_on_success=move_archive_on_success)
+        action(rr, dest_parent, move_archive_on_success=move_archive_on_success)
 
 
 DEFAULT_CONF = '~/.config/dispatch-media.conf'
@@ -409,7 +413,7 @@ def main():
     # WARNING, INFO, DEBUG
     log_level = logging.WARNING - 10 * options.verbosity
     logging.basicConfig(level=log_level, format='%(levelname)s: %(message)s')
-    bb2008_classify.LOGGER.level = log_level + 10
+    CL.LOGGER.level = log_level + 10
 
     if options.config is None:
         options.config = os.path.expanduser(DEFAULT_CONF)
@@ -439,6 +443,8 @@ def main():
             dispatch_torrents(source, places)
         elif stype == 'directories':
             dispatch_directories(source, places)
+        elif stype == 'transmission':
+            dispatch_transmission(source, places)
         else:
             LOGGER.error('Invalid source type %s', stype)
 

@@ -1,8 +1,8 @@
 # Copyright 2010 Quantique. Licence: GPL3+
 
-# Figure out a better name
-from bb2008_torrents import read_torrent, torrent_files
-import bb2008_media_types as MT
+from dispatchmedia.common import unix_basename, ensure_dir
+from dispatchmedia.torrents import TorrentData
+import dispatchmedia.media_types as MT
 
 from collections import defaultdict
 import logging
@@ -59,60 +59,174 @@ def intersect_keepcase(s1, s2):
             r.add(i)
     return r
 
-def unix_basename(path):
-    # The python version returns an empty basename if the path ends in a slash
-    di, ba = os.path.split(path)
-    if ba:
-        return ba
-    else:
-        return os.path.basename(di)
-
-def torrent_files_iter(fname):
-    dct = read_torrent(fname)
-    return torrent_files(dct)
-
 def istream_iter(istream):
     for line in istream:
         size, fname = LINE_RE.match(line).groups()
         yield fname, size
 
-def find_iter(directory):
-    cmd = [ 'find', '-type', 'f', '-printf', '%s %p\n', ]
-    proc = subprocess.Popen(cmd, cwd=directory, stdout=subprocess.PIPE)
+class UnknownReleaseKindError(ValueError):
+    pass
 
-    for item in istream_iter(proc.stdout):
-        yield item
+class Release(object):
+    def __init__(self, fname, name=None):
+        self.fname = fname
+        if name is None:
+            self.name = unix_basename(fname)
+        else:
+            self.name = name
 
-    proc.wait()
-    if proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
+    @classmethod
+    def from_fname(cls, fname):
+        if os.path.isdir(fname):
+            return Directory(fname)
+        prefix, ext = os.path.splitext(fname)
+        ext = ext.lower()
+        if ext == '.torrent':
+            return Torrent(fname)
+        if ext[0] == '.' and ext[1:] in ARCHIVE_EXTS:
+            return Archive(fname)
+        raise UnknownReleaseKindError('Unknown release type for %s' % fname)
 
-def seven_iter(fname):
-    # unrar l -v could also work, but it's nonsensical to parse
-    # some begin/end sections, some uniq
-    # pypi:rarfile isn't packaged
-    cmd = [ '7z', 'l', '--', fname, ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    inside = False
+class Torrent(Release):
+    def __init__(self, *args, **kargs):
+        super(Torrent, self).__init__(*args, **kargs)
+        self._data = TorrentData.from_file(self.fname)
 
-    for line in proc.stdout:
-        match = SEVEN_BORDER_RE.match(line)
-        if match:
-            if inside:
-                break
+    def __del__(self):
+        del self._data
+
+    def iter_names_and_sizes(self):
+        return self._data.torrent_files()
+
+    def walk_lockstep(self, down_loc, dest_parent):
+        if not os.path.exists(down_loc):
+            LOGGER.warn('Skipping inexistent %s', down_loc)
+            return
+
+        dest_loc = os.path.join(dest_parent, self._data.name)
+        if not self._data.is_multi:
+            yield down_loc, dest_loc
+            return
+
+        dirs_done = set()
+        ensure_dir(dest_loc)
+
+        for path_bytes in self._data.multi_finfo:
+            path_chars = self._data.multi_finfo_path(path_bytes)
+            src = os.path.join(down_loc, *path_chars)
+            if not os.path.exists(src):
+                LOGGER.debug('Skipping inexistent %s', src)
+                continue
+            dest = os.path.join(dest_loc, *path_chars)
+            dir_path = path_chars[:-1]
+            if tuple(dir_path) not in dirs_done:
+                pfx = dest_loc
+                pfx2 = []
+                for fragment in dir_path:
+                    pfx += '/' + fragment
+                    pfx2.append(fragment)
+                    pfx3 = tuple(pfx2)
+                    if pfx3 not in dirs_done:
+                        ensure_dir(pfx)
+                        dirs_done.add(pfx3)
+            yield src, dest
+
+    def down_loc(self, default_down_base):
+        return self._data.down_loc(default_down_base)
+
+
+class TransmissionTorrent(Torrent):
+    def __init__(self, fname, config_dir):
+        super(TransmissionTorrent, self).__init__(fname)
+        self.config_dir = config_dir
+
+    @property
+    def transmission_basename(self):
+        # Are slashes even allowed? name should probably require no slashes.
+        name = self._data.name.replace('/', '_')
+        short_ih = self._data.info_hash[:16]
+        return name + '.' + short_ih
+
+    @property
+    def transmission_resume_fname(self):
+        return os.path.join(self.config_dir, 'resume',
+                self.transmission_basename + '.resume')
+
+    @property
+    def transmission_down_dir(self):
+        resume_data = TorrentData.from_file(self.transmission_resume_fname)
+        # XXX Not sure about encoding
+        ddir = resume_data._tdata['destination'].decode('utf-8')
+        del resume_data
+        return ddir
+
+    def down_loc(self, default_down_base):
+        return os.path.join(self.transmission_down_dir, self._data.name)
+
+class Directory(Release):
+    def iter_names_and_sizes(self):
+        cmd = [ 'find', '-type', 'f', '-printf', '%s %p\n', ]
+        proc = subprocess.Popen(cmd, cwd=self.fname, stdout=subprocess.PIPE)
+
+        for item in istream_iter(proc.stdout):
+            yield item
+
+        proc.wait()
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+    def walk_lockstep(self, down_loc, dest_parent):
+        if down_loc != self.fname:
+            raise ValueError(down_loc, self.fname)
+        dest_loc = os.path.join(dest_parent, unix_basename(down_loc))
+        for (dirpath, dirnames, filenames) in os.walk(down_loc):
+            if dirpath == down_loc:
+                d2 = dest_loc
             else:
-                s0, s1 = match.span(1)
-                n0, n1 = match.span(2)
-                inside = True
-        elif inside:
-            yield line[n0:-1], line[s0:s1]
+                d2 = os.path.join(dest_loc, os.path.relpath(dirpath, down_loc))
+            # Happens when transitioning from shallow symlinks,
+            # maybe we should error out anyway.
+            if os.path.lexists(d2):
+                if not os.path.isdir(d2):
+                    LOGGER.warn('%s already exists and isn\'t a directory', d2)
+                    # Prevent recursion
+                    dirnames[:] = []
+                    continue
+            else:
+                os.mkdir(d2)
+            for fname in filenames:
+                src = os.path.join(dirpath, fname)
+                dest = os.path.join(d2, fname)
+                yield src, dest
 
-    proc.wait()
-    if proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+class Archive(Release):
+    def iter_names_and_sizes(self):
+        # unrar l -v could also work, but it's nonsensical to parse
+        # some begin/end sections, some uniq
+        # pypi:rarfile isn't packaged
+        cmd = [ '7z', 'l', '--', self.fname, ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        inside = False
+
+        for line in proc.stdout:
+            match = SEVEN_BORDER_RE.match(line)
+            if match:
+                if inside:
+                    break
+                else:
+                    s0, s1 = match.span(1)
+                    n0, n1 = match.span(2)
+                    inside = True
+            elif inside:
+                yield line[n0:-1], line[s0:s1]
+
+        proc.wait()
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
-def classify_iter(it, name):
+def classify(release):
     size_max = -1
     ext_size_max = -1
     total_size = 0
@@ -121,7 +235,7 @@ def classify_iter(it, name):
     item_count_by_ext = defaultdict(int)
     size_of_dir = defaultdict(int)
     common_prefix = None
-    for (fname, size) in it:
+    for (fname, size) in release.iter_names_and_sizes():
         if common_prefix is not None:
             common_prefix = os.path.commonprefix((common_prefix, fname))
         else:
@@ -161,7 +275,7 @@ def classify_iter(it, name):
     largest_dir = max(size_of_dir, key=lambda d: size_of_dir[d])
     largest_dir_rel_weight = float(size_of_dir[largest_dir]) / total_size
 
-    del (it, basename,
+    del (basename,
         dirname, ext, noext, size, ext_size, fname )
     # ugly output
     #LOGGER.debug(yaml.dump(locals()))
@@ -181,8 +295,8 @@ def classify_iter(it, name):
 
     release_tokens = set()
     release_tokens.update(TERM_SEP_RE.split(common_prefix.lower()))
-    if name:
-        release_tokens.update(TERM_SEP_RE.split(name.lower()))
+    if release.name:
+        release_tokens.update(TERM_SEP_RE.split(release.name.lower()))
     LOGGER.debug('Tokens searched for hints: %s', ' '.join(release_tokens))
 
     if ext_of_bulk in MUSIC_EXTS:
@@ -232,39 +346,4 @@ def classify_iter(it, name):
         LOGGER.info(
             'Report a bug if you think it should be')
         return MT.Unknown
-
-class SourceKind(object):
-    directory = object()
-    torrent = object()
-    archive = object()
-
-class UnknownSourceKindError(ValueError):
-    pass
-
-def detect_kind(fname):
-    if os.path.isdir(fname):
-        return SourceKind.directory
-    prefix, ext = os.path.splitext(fname)
-    ext = ext.lower()
-    if ext == '.torrent':
-        return SourceKind.torrent
-    if ext[0] == '.' and ext[1:] in ARCHIVE_EXTS:
-        return SourceKind.archive
-    raise UnknownSourceKindError('Unknown release type for %s' % fname)
-
-def classify(fname, kind=None, name=None):
-    if kind is None:
-        kind = detect_kind(fname)
-
-    if name is None:
-        name = unix_basename(fname)
-
-    if kind == SourceKind.directory:
-        it = find_iter(fname)
-    elif kind == SourceKind.archive:
-        it = seven_iter(fname)
-    elif kind == SourceKind.torrent:
-        it = torrent_files_iter(fname)
-
-    return classify_iter(it, name)
 
