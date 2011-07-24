@@ -36,9 +36,9 @@ EBOOK_EXTS = defset(
 SUBTITLES_EXTS = defset('ass ssa srt sub sup')
 
 # Common tar archives
-TAR_EXTS = defset('gz bz2 xz')
+TAR_COMPTYPES = defset('gz bz2 xz')
 ARCHIVE_EXTS = defset('rar zip tar 7z')
-for ext in TAR_EXTS:
+for ext in TAR_COMPTYPES:
     ARCHIVE_EXTS.add('tar.' + ext)
     ARCHIVE_EXTS.add('t' + ext)
 
@@ -69,6 +69,22 @@ def istream_iter(istream):
         yield fname, size
 
 
+def ext_of_name(fname):
+    """Returns the real extension, and an extension to classify on."""
+
+    noext, ext = os.path.splitext(fname)
+
+    if ext[1:] in TAR_COMPTYPES and noext.endswith('.tar'):
+        ext = '.tar' + ext
+
+    if RAR_EXT_RE.match(ext):
+        cl_ext = '.rar'
+    else:
+        cl_ext = ext.lower()
+
+    return ext, cl_ext
+
+
 class UnknownReleaseKindError(ValueError):
     pass
 
@@ -85,11 +101,10 @@ class Release(object):
     def from_fname(cls, fname):
         if os.path.isdir(fname):
             return Directory(fname)
-        prefix, ext = os.path.splitext(fname)
-        ext = ext.lower()
-        if ext == '.torrent':
+        real_ext, cl_ext = ext_of_name(fname)
+        if cl_ext == '.torrent':
             return Torrent(fname)
-        if ext[0] == '.' and ext[1:] in ARCHIVE_EXTS:
+        if cl_ext[0] == '.' and cl_ext[1:] in ARCHIVE_EXTS:
             return Archive(fname)
         raise UnknownReleaseKindError('Unknown release type for %s' % fname)
 
@@ -256,18 +271,13 @@ def classify(release):
             # fname is empty or ends with a slash.
             raise ValueError(fname)
 
-        noext, ext = os.path.splitext(basename)
-        if ext[1:] in TAR_EXTS and noext.endswith('.tar'):
-            noext, _ = os.path.splitext(noext)
-            ext = '.tar' + ext
-        elif RAR_EXT_RE.match(ext):
-            ext = '.rar'
-        item_count_by_ext[ext] += 1
-        ext_size = size_by_ext[ext] + size
-        size_by_ext[ext] = ext_size
+        real_ext, cl_ext = ext_of_name(basename)
+        item_count_by_ext[cl_ext] += 1
+        ext_size = size_by_ext[cl_ext] + size
+        size_by_ext[cl_ext] = ext_size
         if ext_size > ext_size_max:
             ext_size_max = ext_size
-            ext_size_max_item = ext
+            ext_size_max_item = cl_ext
 
         size_of_dir[dirname] += size
 
@@ -280,16 +290,12 @@ def classify(release):
     largest_dir = max(size_of_dir, key=lambda d: size_of_dir[d])
     largest_dir_rel_weight = float(size_of_dir[largest_dir]) / total_size
 
-    del (basename, dirname, ext, noext, size, ext_size, fname)
-    # ugly output
-    #LOGGER.debug(yaml.dump(locals()))
-
     if not ext_size_max_item:
         LOGGER.warn('The bulk of the release has no file extension.')
         # The empty ext dominates
         return MT.Unknown
 
-    ext_of_bulk = ext_size_max_item[1:].lower()
+    ext_of_bulk = ext_size_max_item[1:]
     count_of_bulk_by_ext = item_count_by_ext[ext_size_max_item]
 
     LOGGER.info(
