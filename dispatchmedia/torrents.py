@@ -70,18 +70,6 @@ class TorrentData(BData):
         # Wasteful but convenient
         return hashlib.sha1(bencode(self._meta_inf)).hexdigest()
 
-    def is_rtorrent_session_data(self):
-        return 'rtorrent' in self._tdata
-
-    def down_loc(self, down_base, use_rtorrent_meta=True):
-        if use_rtorrent_meta and self.is_rtorrent_session_data():
-            down_loc = os.path.expanduser(self._tdata['rtorrent']['directory'])
-            if not self.is_multi:
-                down_loc = os.path.join(down_loc, self.name)
-        else:
-            down_loc = os.path.join(down_base, self.name)
-        return down_loc
-
     def require_sane_encoding(self):
         """
         Make sure file names are safe to use.

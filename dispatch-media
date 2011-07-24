@@ -42,6 +42,7 @@ import dispatchmedia.classify as CL
 from dispatchmedia.common import iso8601_now, ensure_dir
 from dispatchmedia.torrents import TorrentFileError
 from dispatchmedia.media_types import Media, Unknown, Empty, Archive
+from dispatchmedia.xmlrpc2scgi import do_xmlrpc
 
 import errno
 import glob
@@ -136,6 +137,7 @@ FS_ACTIONS = {
     }
 
 TORRENT_ACTIONS = dict(FS_ACTIONS)
+RTORRENT_ACTIONS = dict(FS_ACTIONS)
 DIR_ACTIONS = dict(move=move_once, **FS_ACTIONS)
 
 
@@ -312,27 +314,27 @@ def lookup_cat(release, places):
     except TorrentFileError, e:
         LOGGER.warn(e)
         # Some errors don't have the fname, workaround
-        LOGGER.warn('Skipping torrent %s', release.fname)
+        LOGGER.warn('Skipping torrent %s', release)
         return
     except UnicodeDecodeError, e:
         LOGGER.info(e)
         LOGGER.warn(
-            'Skipping torrent with bad character encoding %s', release.fname)
+            'Skipping torrent with bad character encoding %s', release)
         return
 
     if cat in (Unknown, Empty):
-        LOGGER.info('Skipping %s %s', cat.name(lower=True), release.fname)
+        LOGGER.info('Skipping %s %s', cat.name(lower=True), release)
         return
 
     if cat is Archive:
-        if isinstance(release, CL.Torrent):
+        if release.is_indirect:
             LOGGER.info(
-                'Skipping nested archive referenced by %s', release.fname)
+                'Skipping nested archive referenced by %s', release)
         else:
-            LOGGER.info('Skipping nested archive inside %s', release.fname)
+            LOGGER.info('Skipping nested archive inside %s', release)
         return
 
-    return places.dest_base_of_cat(cat, release.fname)
+    return places.dest_base_of_cat(cat, release)
 
 
 def dispatch_torrents(source_config, places):
@@ -354,14 +356,27 @@ def dispatch_torrents(source_config, places):
         dest_parent = lookup_cat(release, places)
         if dest_parent is None:
             continue
-        down_loc = release.down_loc(default_down_base=down_base)
+        down_loc = os.path.join(down_base, release.likely_down_name)
         action(release, down_loc, dest_parent)
 
-        # Could be large
-        del release
+
+def dispatch_rtorrent(source_config, places):
+    endpoint = os.path.expanduser(source_config['endpoint'])
+    action = RTORRENT_ACTIONS[source_config['action']]
+
+    for (info_hash, down_loc, fname) in do_xmlrpc(
+        endpoint, 'd.multicall', 'complete',
+        'd.get_hash=', 'd.get_base_path=', 'd.get_loaded_file=',
+    ):
+        release = CL.RTorrentTorrent(fname, info_hash)
+        dest_parent = lookup_cat(release, places)
+        if dest_parent is None:
+            continue
+        action(release, down_loc, dest_parent)
 
 
 def dispatch_transmission(source_config, places):
+    # XXX Not tested yet
     confdir = os.path.expanduser(source_config['confdir'])
     if not os.path.exists(confdir):
         LOGGER.error(
@@ -378,12 +393,9 @@ def dispatch_transmission(source_config, places):
         dest_parent = lookup_cat(release, places)
         if dest_parent is None:
             continue
-        down_loc = release.down_loc(default_down_base=None)
-        print down_loc
-        #action(release, down_loc, dest_parent)
-
-        # Could be large
-        del release
+        down_loc = release.transmission_down_loc
+        LOGGER.info('Transmission download at %s', down_loc)
+        action(release, down_loc, dest_parent)
 
 
 def dispatch_directories(source_config, places):
@@ -466,6 +478,8 @@ def main():
             dispatch_torrents(source, places)
         elif stype == 'directories':
             dispatch_directories(source, places)
+        elif stype == 'rtorrent':
+            dispatch_rtorrent(source, places)
         elif stype == 'transmission':
             dispatch_transmission(source, places)
         else:

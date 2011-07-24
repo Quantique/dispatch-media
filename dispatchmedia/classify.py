@@ -91,11 +91,17 @@ class UnknownReleaseKindError(ValueError):
 
 class Release(object):
     def __init__(self, fname, name=None):
+        if type(self) is Release:
+            raise TypeError('Release is an abstract class')
+
         self.fname = fname
         if name is None:
             self.name = unix_basename(fname)
         else:
             self.name = name
+
+    def __str__(self):
+        return self.fname
 
     @classmethod
     def from_fname(cls, fname):
@@ -110,6 +116,8 @@ class Release(object):
 
 
 class Torrent(Release):
+    is_indirect = True
+
     def __init__(self, *args, **kargs):
         super(Torrent, self).__init__(*args, **kargs)
         self._data = TorrentData.from_file(self.fname)
@@ -150,8 +158,15 @@ class Torrent(Release):
                         dirs_done.add(pfx3)
             yield src, dest
 
-    def down_loc(self, default_down_base):
-        return self._data.down_loc(default_down_base)
+    @property
+    def likely_down_name(self):
+        return self._data.name
+
+
+class RTorrentTorrent(Torrent):
+    def __init__(self, fname, info_hash):
+        super(RTorrentTorrent, self).__init__(fname)
+        self.info_hash = info_hash
 
 
 class TransmissionTorrent(Torrent):
@@ -179,11 +194,14 @@ class TransmissionTorrent(Torrent):
         del resume_data
         return ddir
 
-    def down_loc(self, default_down_base):
+    @property
+    def transmission_down_loc(self):
         return os.path.join(self.transmission_down_dir, self._data.name)
 
 
 class Directory(Release):
+    is_indirect = False
+
     def iter_names_and_sizes(self):
         cmd = ['find', '-type', 'f', '-printf', '%s %p\n', ]
         proc = subprocess.Popen(cmd, cwd=self.fname, stdout=subprocess.PIPE)
@@ -221,6 +239,8 @@ class Directory(Release):
 
 
 class Archive(Release):
+    is_indirect = False
+
     def iter_names_and_sizes(self):
         # unrar l -v could also work, but it's nonsensical to parse
         # some begin/end sections, some uniq
