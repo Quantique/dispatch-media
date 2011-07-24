@@ -2,6 +2,7 @@
 
 
 import contextlib
+import errno
 import hashlib
 import logging
 import os.path
@@ -21,11 +22,14 @@ except ImportError, e:
         LOGGER.info('Using the slower python-bittorrent,'
                 ' install python-libtorrent to bdecode faster')
 
+
 class TorrentFileError(ValueError):
     pass
 
 
 class BData(object):
+    __slots__ = ('_tdata',)
+
     def __init__(self, tdata):
         if not isinstance(tdata, dict):
             raise TorrentFileError('Not bencoded data')
@@ -46,6 +50,8 @@ class BData(object):
 
 
 class TorrentData(BData):
+    __slots__ = ()
+
     def __init__(self, tdata):
         super(TorrentData, self).__init__(tdata)
         if 'info' not in tdata:
@@ -80,7 +86,8 @@ class TorrentData(BData):
         """
         Make sure file names are safe to use.
 
-        The spec mandates UTF-8 everywhere. Make sure we have UTF-8 or a subset.
+        The spec mandates UTF-8 everywhere.
+        Make sure we have UTF-8 or a subset.
         ANSI_X3.4-1968 is ASCII.
         """
 
@@ -97,6 +104,10 @@ class TorrentData(BData):
             return self._meta_inf['name.utf-8'].decode('utf-8')
         else:
             return self._meta_inf['name'].decode(self.encoding)
+
+    @property
+    def piece_length(self):
+        return self._meta_inf['piece length']
 
     @property
     def is_multi(self):
@@ -123,13 +134,17 @@ class TorrentData(BData):
             finfo = self._meta_inf
             yield path, finfo['length']
 
+
 class Profile(object):
     bdata = BData
     torrent = TorrentData
-    rtorrent = TorrentData # XXX
+    rtorrent = TorrentData  # XXX
     best = object()
 
+
 def from_filehandle(fhandle, name=None, profile=Profile.torrent):
+    # XXX The exception thing is a kludge
+    # Should pass the name to the torrent itself
     if profile is not Profile.best and not issubclass(profile, BData):
         raise TypeError(profile, BData)
 
@@ -142,27 +157,42 @@ def from_filehandle(fhandle, name=None, profile=Profile.torrent):
     with contextlib.closing(fhandle):
         fdata = fhandle.read()
 
-    if not fdata: # Coerce to bool -> test for emptiness
+    if not fdata:  # Coerce to bool -> test for emptiness
         raise TorrentFileError("Torrent file empty: %s" % name)
     try:
         tdata = bdecode(fdata)
-        if tdata is None: # libtorrent doesn't report errors properly
+        if tdata is None:  # libtorrent doesn't report errors properly
             raise ValueError
     except ValueError, exn:
-        raise TorrentFileError("Couldn't parse torrent: %s" % name)
+        raise TorrentFileError("Couldn't parse bdata: %s" % name)
 
     if profile is Profile.best:
         for pr in (Profile.rtorrent, Profile.torrent):
             try:
                 return pr(tdata)
-            except TorrentFileError:
-                pass
-        return BData(tdata)
+            except TorrentFileError, err:
+                continue  # try again with the next profile
+        try:
+            return BData(tdata)
+        except TorrentFileError, err:
+            raise TorrentFileError(
+                "Couldn't parse torrent %s, %s" % (name, err))
     else:
-        return profile(tdata)
+        try:
+            return profile(tdata)
+        except TorrentFileError, err:
+            raise TorrentFileError(
+                "Couldn't parse torrent %s, %s" % (name, err))
+
 
 def from_filename(fname, *args, **kargs):
-    with open(fname) as fhandle:
-        return from_filehandle(fhandle, name=fname, *args, **kargs)
-
+    try:
+        with open(fname) as fhandle:
+            return from_filehandle(fhandle, name=fname, *args, **kargs)
+    except IOError, e:
+        if e.errno == errno.ENOENT:
+            raise TorrentFileError(
+                'Torrent file doesn\'t exist: %s' % fname)
+        else:
+            raise
 

@@ -88,6 +88,7 @@ def link_once(orig, dest, symbolic):
             # chattr +i prevents hardlinking, sadly
             LOGGER.warn('%s linking %s to %s', e.strerror, orig, dest)
 
+
 def link_deep(release, orig, dest, symbolic):
     """
     To delete a symlink tree:
@@ -97,14 +98,18 @@ def link_deep(release, orig, dest, symbolic):
     for (src, dest) in release.walk_lockstep(orig, dest):
         link_once(src, dest, symbolic)
 
+
 def symlink_once(release, orig, dest):
     link_once(orig, dest, symbolic=True)
+
 
 def symlink_deep(release, orig, dest):
     link_deep(release, orig, dest, symbolic=True)
 
+
 def hardlink_deep(release, orig, dest):
     link_deep(release, orig, dest, symbolic=False)
+
 
 def move_once(release, orig, dest):
     if os.path.lexists(dest):
@@ -115,11 +120,13 @@ def move_once(release, orig, dest):
     # DWIM workaround: this works OK if dest doesn't exist
     shutil.move(orig, dest)
 
+
 def rsync_once(release, orig, dest):
     # DWIM workaround
     if os.path.isdir(orig):
         orig += '/'
-    subprocess.check_call([ 'rsync', '-ax', '--', orig, dest, ])
+    subprocess.check_call(['rsync', '-ax', '--', orig, dest, ])
+
 
 FS_ACTIONS = {
     'symlink-once': symlink_once,
@@ -135,6 +142,7 @@ DIR_ACTIONS = dict(move=move_once, **FS_ACTIONS)
 STRIP_RAR_SUFFIX_RE = re.compile(r'(.*?)(\.part0*1)?\.rar$', re.I)
 EXTRACT_BAK = 'extract-bak'
 EXTRACT_LOG = 'extract-log'
+
 
 class RarRelease(object):
     def __init__(self,
@@ -158,13 +166,14 @@ class RarRelease(object):
     def archive_path(self):
         return self.path(self.archive_name)
 
+
 def iter_rar_releases(basedir, depth):
     # Path vs options. '-(!' are unsafe.
     if not os.path.isabs(basedir):
         basedir = './' + basedir
 
     # Find single-part archives and first parts of multi-part archives.
-    cmd = [ 'find', '-H', basedir,
+    cmd = ['find', '-H', basedir,
         '-maxdepth', str(depth),
         '-iname', '*.' + EXTRACT_BAK, '-prune',
         '-o', '(',
@@ -185,11 +194,11 @@ def iter_rar_releases(basedir, depth):
         parent1, archive_name = os.path.split(archive_path)
         assert parent == parent1
 
-        if part: # multipart archive
+        if part:  # multipart archive
             archive_files_re = re.compile('^' + re.escape(pfx_name)
                     + '\\' + part.replace('0', '[0-9]').replace('1', '[0-9]')
                     + '\.rar$', re.I)
-        else: # might yet be the .r00 kind of multipart.
+        else:  # might yet be the .r00 kind of multipart.
             archive_files_re = re.compile('^' +
                     re.escape(archive_name[:-2]) + '(ar|[0-9]{2})$', re.I)
         aux_files_re = re.compile('^' + re.escape(pfx_name) + '.*$', re.I)
@@ -208,6 +217,7 @@ def iter_rar_releases(basedir, depth):
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(cmd, proc.returncode)
 
+
 def extract_archive(rr, dest_parent, move_archive_on_success=True):
     logname = rr.aux_name(EXTRACT_LOG)
 
@@ -220,7 +230,7 @@ def extract_archive(rr, dest_parent, move_archive_on_success=True):
         return
 
     # List the files so we know where they were extracted.
-    cmd = [ 'dtrx', '-nv', '--', os.path.abspath(rr.archive_path) ]
+    cmd = ['dtrx', '-nv', '--', os.path.abspath(rr.archive_path), ]
     proc = subprocess.Popen(cmd,
             cwd=dest_parent, stdout=subprocess.PIPE)
 
@@ -247,12 +257,12 @@ def extract_archive(rr, dest_parent, move_archive_on_success=True):
         os.rename(rr.path(part), os.path.join(extract_bak, part))
 
 
-
 # Not the same prototype as TORRENT_ACTIONS!
 # Takes an extra move_archive_on_success keyword argument
 ARCHIVE_ACTIONS = {
     'extract': extract_archive,
     }
+
 
 class Places(object):
     def __init__(self, places_config):
@@ -292,6 +302,7 @@ class Places(object):
                 return
         return dest_parent
 
+
 def lookup_cat(release, places):
     try:
         cat = CL.classify(release)
@@ -305,7 +316,8 @@ def lookup_cat(release, places):
         return
     except UnicodeDecodeError, e:
         LOGGER.info(e)
-        LOGGER.warn('Skipping torrent with bad character encoding %s', release.fname)
+        LOGGER.warn(
+            'Skipping torrent with bad character encoding %s', release.fname)
         return
 
     if cat in (Unknown, Empty):
@@ -314,12 +326,14 @@ def lookup_cat(release, places):
 
     if cat is Archive:
         if isinstance(release, CL.Torrent):
-            LOGGER.info('Skipping nested archive referenced by %s', release.fname)
+            LOGGER.info(
+                'Skipping nested archive referenced by %s', release.fname)
         else:
             LOGGER.info('Skipping nested archive inside %s', release.fname)
         return
 
     return places.dest_base_of_cat(cat, release.fname)
+
 
 def dispatch_torrents(source_config, places):
     pattern = os.path.expanduser(source_config['pattern'])
@@ -331,7 +345,11 @@ def dispatch_torrents(source_config, places):
     action = TORRENT_ACTIONS[source_config['action']]
 
     for torrent in glob.iglob(pattern):
-        release = CL.Torrent(torrent)
+        try:
+            release = CL.Torrent(torrent)
+        except TorrentFileError, err:
+            LOGGER.error(err)
+            continue
 
         dest_parent = lookup_cat(release, places)
         if dest_parent is None:
@@ -341,6 +359,7 @@ def dispatch_torrents(source_config, places):
 
         # Could be large
         del release
+
 
 def dispatch_transmission(source_config, places):
     confdir = os.path.expanduser(source_config['confdir'])
@@ -366,6 +385,7 @@ def dispatch_transmission(source_config, places):
         # Could be large
         del release
 
+
 def dispatch_directories(source_config, places):
     pattern = os.path.expanduser(source_config['pattern'])
     action = DIR_ACTIONS[source_config['action']]
@@ -375,6 +395,7 @@ def dispatch_directories(source_config, places):
         if dest_parent is None:
             continue
         action(release, dname, dest_parent)
+
 
 def dispatch_archives(archives_config, places):
     search_base = os.path.expanduser(archives_config['search'])
@@ -391,10 +412,12 @@ def dispatch_archives(archives_config, places):
         dest_parent = lookup_cat(release, places)
         if dest_parent is None:
             continue
-        action(rr, dest_parent, move_archive_on_success=move_archive_on_success)
+        action(rr, dest_parent,
+                move_archive_on_success=move_archive_on_success)
 
 
 DEFAULT_CONF = '~/.config/dispatch-media.conf'
+
 
 def main():
     parser = optparse.OptionParser()
@@ -425,7 +448,7 @@ def main():
     try:
         with open(options.config) as confstream:
             config = yaml.safe_load(confstream)
-    except IOError, e:
+    except IOError, err:
         LOGGER.error('Configuration file %s couldn\'t be loaded, exiting',
                 options.config)
         return 3

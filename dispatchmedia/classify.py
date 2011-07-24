@@ -19,6 +19,7 @@ RAR_EXT_RE = re.compile(r'^\.r(\d\d)$')
 TERM_SEP_RE = re.compile(r'[_\W]+', re.UNICODE)
 SEVEN_BORDER_RE = re.compile(r'^-+ -+ (-+) -+  (-+)\n$')
 
+
 def defset(line):
     return set(line.split())
 
@@ -30,7 +31,8 @@ VID_EXTS = defset('avi mkv mpg mov ogv ogm m4v mp4 m2ts vob rmvb wmv')
 FONT_EXTS = defset('otf ttf ttc pfb')
 ISO_EXTS = defset('iso nrg ccd b5i cdi')
 COMICBOOK_EXTS = defset('cbt cbr cbz')
-EBOOK_EXTS = defset('epub html htm chm rtf txt djvu pdf doc docx lrf mobi lit eps')
+EBOOK_EXTS = defset(
+    'epub html htm chm rtf txt djvu pdf doc docx lrf mobi lit eps')
 SUBTITLES_EXTS = defset('ass ssa srt sub sup')
 
 # Common tar archives
@@ -52,6 +54,7 @@ SERIES_HINTS = defset('HDTV TV season seasons series')
 MOVIE_HINTS = defset('Cam TS TeleSync TC TeleCine R5 DVDSCR')
 GAME_PLATFORMS = defset('Xbox Wii PS2 PS3 PC')
 
+
 def intersect_keepcase(s1, s2):
     r = set()
     for i in s1:
@@ -59,13 +62,16 @@ def intersect_keepcase(s1, s2):
             r.add(i)
     return r
 
+
 def istream_iter(istream):
     for line in istream:
         size, fname = LINE_RE.match(line).groups()
         yield fname, size
 
+
 class UnknownReleaseKindError(ValueError):
     pass
+
 
 class Release(object):
     def __init__(self, fname, name=None):
@@ -87,13 +93,11 @@ class Release(object):
             return Archive(fname)
         raise UnknownReleaseKindError('Unknown release type for %s' % fname)
 
+
 class Torrent(Release):
     def __init__(self, *args, **kargs):
         super(Torrent, self).__init__(*args, **kargs)
         self._data = TorrentData.from_file(self.fname)
-
-    def __del__(self):
-        del self._data
 
     def iter_names_and_sizes(self):
         return self._data.torrent_files()
@@ -163,9 +167,10 @@ class TransmissionTorrent(Torrent):
     def down_loc(self, default_down_base):
         return os.path.join(self.transmission_down_dir, self._data.name)
 
+
 class Directory(Release):
     def iter_names_and_sizes(self):
-        cmd = [ 'find', '-type', 'f', '-printf', '%s %p\n', ]
+        cmd = ['find', '-type', 'f', '-printf', '%s %p\n', ]
         proc = subprocess.Popen(cmd, cwd=self.fname, stdout=subprocess.PIPE)
 
         for item in istream_iter(proc.stdout):
@@ -205,7 +210,7 @@ class Archive(Release):
         # unrar l -v could also work, but it's nonsensical to parse
         # some begin/end sections, some uniq
         # pypi:rarfile isn't packaged
-        cmd = [ '7z', 'l', '--', self.fname, ]
+        cmd = ['7z', 'l', '--', self.fname, ]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
         inside = False
 
@@ -269,14 +274,13 @@ def classify(release):
     item_count_by_ext = dict(item_count_by_ext)
     size_by_ext = dict(size_by_ext)
 
-    if size_max == -1: # No lines
+    if size_max == -1:  # No lines
         return MT.Empty
 
     largest_dir = max(size_of_dir, key=lambda d: size_of_dir[d])
     largest_dir_rel_weight = float(size_of_dir[largest_dir]) / total_size
 
-    del (basename,
-        dirname, ext, noext, size, ext_size, fname )
+    del (basename, dirname, ext, noext, size, ext_size, fname)
     # ugly output
     #LOGGER.debug(yaml.dump(locals()))
 
@@ -310,9 +314,10 @@ def classify(release):
         return MT.EBook
     elif ext_of_bulk in FONT_EXTS:
         return MT.Font
-    elif ext_of_bulk in ISO_EXTS \
-            or (ext_of_bulk == 'bin' \
-                    and item_count_by_ext['.cue'] == item_count_by_ext['.bin']):
+    elif (ext_of_bulk in ISO_EXTS
+          or (
+              ext_of_bulk == 'bin'
+              and item_count_by_ext['.cue'] == item_count_by_ext['.bin'])):
         platform_hints = intersect_keepcase(GAME_PLATFORMS, release_tokens)
         if len(platform_hints) == 1:
             return MT.Media.registry[platform_hints.pop()]
