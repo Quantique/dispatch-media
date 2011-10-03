@@ -39,13 +39,15 @@ sys.setdefaultencoding(locale.getdefaultlocale()[1])
 
 
 import dispatchmedia.classify as CL
-from dispatchmedia.common import iso8601_now, ensure_dir
+from dispatchmedia.common import iso8601_now, ensure_dir, memoized_property
 from dispatchmedia.torrents import TorrentFileError
 from dispatchmedia.media_types import Media, Unknown, Empty, Archive
 from dispatchmedia.xmlrpc2scgi import do_xmlrpc
 
+import contextlib
 import errno
 import glob
+import hashlib
 import logging
 import optparse
 import os
@@ -58,6 +60,7 @@ import yaml
 
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_CONF = '~/.config/dispatch-media.conf'
 
 
 def link_once(orig, dest, symbolic):
@@ -288,10 +291,10 @@ class Places(object):
 
         self.autocreate = places_config['autocreate']
 
-    def dest_base_of_cat(self, cat, fname):
+    def dest_base_of_cat(self, cat, release):
         if cat not in self.locations:
             # Not an accepted category, see the places.accept setting
-            LOGGER.info('Skipping %s %s', cat.name(lower=True), fname)
+            LOGGER.info('Skipping %s %s', cat.name(lower=True), release)
             return
         dest_parent = self.locations[cat]
         if not os.path.exists(dest_parent):
@@ -300,12 +303,58 @@ class Places(object):
                 os.makedirs(dest_parent, mode=0700)
             else:
                 LOGGER.warn('Skipping %s, please create %s',
-                        fname, dest_parent)
+                        release, dest_parent)
                 return
         return dest_parent
 
 
-def lookup_cat(release, places):
+class DispatchHelper(object):
+    def __init__(self, source_config, places, db_path):
+        self.__source_config = source_config
+        self.__places = places
+        self.__db_path = db_path
+
+    def lookup_cat(self, release):
+        cat = lookup_cat(release)
+        if cat:
+            return self.__places.dest_base_of_cat(cat, release)
+
+    def filter_items(self, source_config, item_iter, item_key=lambda x: x):
+        class Callbacks(object):
+            def __init__(self, key):
+                self.key = key
+            def done(self):
+                db[self.key] = '1'
+
+        for item in item_iter:
+            key = 'done:%s:%s' % (source_hash, item_key(item))
+            if key in db:
+                continue
+            yield item, Callbacks(key)
+
+    @memoized_property
+    def _source_hash(self):
+        return hashlib.sha1(yaml.safe_dump(self.__source_config))
+
+    @memoized_property
+    def _db(self):
+        return dbm.open(self.__db_path, 'c')
+
+    @contextlib.contextmanager
+    def filter_callback(self, key):
+        class Callbacks(object):
+            def __init__(self, key):
+                self.key = key
+            def done(self):
+                self._db[self.key] = '1'
+
+        key = 'done:%s:%s' % (self._source_hash, key)
+        if key in self._db:
+            return
+        yield Callbacks(key)
+
+
+def lookup_cat(release):
     try:
         cat = CL.classify(release)
     except subprocess.CalledProcessError, e:
@@ -313,7 +362,7 @@ def lookup_cat(release, places):
         return
     except TorrentFileError, e:
         LOGGER.warn(e)
-        # Some errors don't have the fname, workaround
+        # Some errors don't name the release, do so
         LOGGER.warn('Skipping torrent %s', release)
         return
     except UnicodeDecodeError, e:
@@ -334,10 +383,10 @@ def lookup_cat(release, places):
             LOGGER.info('Skipping nested archive inside %s', release)
         return
 
-    return places.dest_base_of_cat(cat, release)
+    return cat
 
 
-def dispatch_torrents(source_config, places):
+def dispatch_torrents(source_config, helper):
     pattern = os.path.expanduser(source_config['pattern'])
     down_base = os.path.expanduser(source_config['download'])
     if not os.path.exists(down_base):
@@ -346,21 +395,22 @@ def dispatch_torrents(source_config, places):
         return
     action = TORRENT_ACTIONS[source_config['action']]
 
-    for torrent in glob.iglob(pattern):
+    for torrent, cb in helper.filter_items(glob.iglob(pattern)):
         try:
             release = CL.Torrent(torrent)
         except TorrentFileError, err:
             LOGGER.error(err)
             continue
 
-        dest_parent = lookup_cat(release, places)
+        dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
             continue
         down_loc = os.path.join(down_base, release.likely_down_name)
         action(release, down_loc, dest_parent)
+        cb.done()
 
 
-def dispatch_rtorrent(source_config, places):
+def dispatch_rtorrent(source_config, helper):
     endpoint = os.path.expanduser(source_config['endpoint'])
     action = RTORRENT_ACTIONS[source_config['action']]
 
@@ -368,14 +418,15 @@ def dispatch_rtorrent(source_config, places):
         endpoint, 'd.multicall', 'complete',
         'd.get_hash=', 'd.get_base_path=', 'd.get_loaded_file=',
     ):
+        fname = os.path.expanduser(fname)
         release = CL.RTorrentTorrent(fname, info_hash)
-        dest_parent = lookup_cat(release, places)
+        dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
             continue
         action(release, down_loc, dest_parent)
 
 
-def dispatch_transmission(source_config, places):
+def dispatch_transmission(source_config, helper):
     # XXX Not tested yet
     confdir = os.path.expanduser(source_config['confdir'])
     if not os.path.exists(confdir):
@@ -390,7 +441,7 @@ def dispatch_transmission(source_config, places):
         fname = os.path.join(tdir, tbasename)
         release = CL.TransmissionTorrent(fname, confdir)
 
-        dest_parent = lookup_cat(release, places)
+        dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
             continue
         down_loc = release.transmission_down_loc
@@ -398,18 +449,18 @@ def dispatch_transmission(source_config, places):
         action(release, down_loc, dest_parent)
 
 
-def dispatch_directories(source_config, places):
+def dispatch_directories(source_config, helper):
     pattern = os.path.expanduser(source_config['pattern'])
     action = DIR_ACTIONS[source_config['action']]
     for dname in glob.iglob(pattern):
         release = CL.Directory(dname)
-        dest_parent = lookup_cat(release, places)
+        dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
             continue
         action(release, dname, dest_parent)
 
 
-def dispatch_archives(archives_config, places):
+def dispatch_archives(archives_config, helper):
     search_base = os.path.expanduser(archives_config['search'])
     if not os.path.exists(search_base):
         LOGGER.error(
@@ -421,14 +472,11 @@ def dispatch_archives(archives_config, places):
 
     for rr in iter_rar_releases(search_base, depth):
         release = CL.Archive(rr.archive_path)
-        dest_parent = lookup_cat(release, places)
+        dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
             continue
         action(rr, dest_parent,
                 move_archive_on_success=move_archive_on_success)
-
-
-DEFAULT_CONF = '~/.config/dispatch-media.conf'
 
 
 def main():
@@ -468,20 +516,21 @@ def main():
     places = Places(config['places'])
 
     for source in config['sources']:
+        helper = DispatchHelper(source, places, '/FIXME')
         stype = source['type']
         if not source.get('enable', True):
             LOGGER.info('Skipping disabled %s source', stype)
             continue
         if stype == 'archives':
-            dispatch_archives(source, places)
+            dispatch_archives(source, helper)
         elif stype == 'torrents':
-            dispatch_torrents(source, places)
+            dispatch_torrents(source, helper)
         elif stype == 'directories':
-            dispatch_directories(source, places)
+            dispatch_directories(source, helper)
         elif stype == 'rtorrent':
-            dispatch_rtorrent(source, places)
+            dispatch_rtorrent(source, helper)
         elif stype == 'transmission':
-            dispatch_transmission(source, places)
+            dispatch_transmission(source, helper)
         else:
             LOGGER.error('Invalid source type %s', stype)
 

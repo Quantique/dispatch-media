@@ -28,34 +28,57 @@ class TorrentFileError(ValueError):
 
 
 class BData(object):
-    __slots__ = ('_tdata',)
+    __slots__ = ('_tdata', '_fname')
 
-    def __init__(self, tdata):
+    def __init__(self, tdata, file_name=None):
         if not isinstance(tdata, dict):
-            raise TorrentFileError('Not bencoded data')
+            raise TorrentFileError(
+                'bdecoded data should be a dictionary: %s' % self)
         self._tdata = tdata
+        self._fname = file_name
 
-    @classmethod
-    def from_file(cls, fname):
-        # XXX compat wrapper
-        return from_filename(fname, profile=cls)
-
-    @classmethod
-    def from_open_file(cls, fhandle):
-        # XXX compat wrapper
-        return from_filehandle(fhandle, profile=cls)
+    def as_torrent(self):
+        return TorrentData(self)
 
     def to_open_file(self, fhandle):
+        # XXX move this out?
         fhandle.write(bencode(self._tdata))
 
+    def __repr__(self):
+        if self._fname is not None:
+            return '<data bdecoded from %r>' % self._fname
+        return '<bdecoded data at %x>' % id(self)
 
-class TorrentData(BData):
-    __slots__ = ()
 
-    def __init__(self, tdata):
-        super(TorrentData, self).__init__(tdata)
-        if 'info' not in tdata:
+class LibtorrentResume(object):
+    # Adapter pattern
+    # Using composition rather than inheritance because
+    # resume data can be torrent data as well, but only
+    # for some rtorrent versions.
+    def __init__(self, bdata):
+        self._bdata = bdata
+        if self.bdata._fname and self.bdata._fname.endswith(
+                '.torrent.libtorrent_resume'):
+            self._rdata = self._bdata._tdata
+        else:
+            # The older, nested variant
+            self._rdata = self._bdata._tdata['libtorrent_resume']
+        if 'bitfield' not in self._rdata:
+            raise TorrentFileError('No bitfield')
+
+
+class TorrentData(object):
+    # Adapter pattern
+    # BData with an info dict
+
+    def __init__(self, bdata):
+        self._bdata = bdata
+        if 'info' not in self._tdata:
             raise TorrentFileError('No info_dict')
+
+    @property
+    def _tdata(self):
+        return self._bdata._tdata
 
     @property
     def encoding(self):
@@ -123,60 +146,39 @@ class TorrentData(BData):
             yield path, finfo['length']
 
 
-class Profile(object):
-    bdata = BData
-    torrent = TorrentData
-    rtorrent = TorrentData  # XXX
-    best = object()
+def from_filehandle(fhandle):
+    # Deserialisation
 
+    if hasattr(fhandle, 'name'):
+        desc = fhandle.name
+        file_name = fhandle.name
+    else:
+        desc = fhandle
+        file_name = None
 
-def from_filehandle(fhandle, name=None, profile=Profile.torrent):
-    # XXX The exception thing is a kludge
-    # Should pass the name to the torrent itself
-    if profile is not Profile.best and not issubclass(profile, BData):
-        raise TypeError(profile, BData)
-
-    if name is None:
-        if hasattr(fhandle, 'name'):
-            name = fhandle.name
-        else:
-            name = fhandle
-
+    # XXX close ASAP doesn't work well for stdin
     with contextlib.closing(fhandle):
         fdata = fhandle.read()
 
     if not fdata:  # Coerce to bool -> test for emptiness
-        raise TorrentFileError("Torrent file empty: %s" % name)
+        raise TorrentFileError("Torrent file empty: %s" % desc)
     try:
         tdata = bdecode(fdata)
         if tdata is None:  # libtorrent doesn't report errors properly
             raise ValueError
+        if not isinstance(tdata, dict):
+            raise TorrentFileError(
+                "bdecoded data isn't a dictionary: %s" % desc)
     except ValueError, exn:
-        raise TorrentFileError("Couldn't parse bdata: %s" % name)
+        raise TorrentFileError("Couldn't bdecode file: %s" % desc)
 
-    if profile is Profile.best:
-        for pr in (Profile.rtorrent, Profile.torrent):
-            try:
-                return pr(tdata)
-            except TorrentFileError, err:
-                continue  # try again with the next profile
-        try:
-            return BData(tdata)
-        except TorrentFileError, err:
-            raise TorrentFileError(
-                "Couldn't parse torrent %s, %s" % (name, err))
-    else:
-        try:
-            return profile(tdata)
-        except TorrentFileError, err:
-            raise TorrentFileError(
-                "Couldn't parse torrent %s, %s" % (name, err))
+    return BData(tdata, file_name=file_name)
 
 
-def from_filename(fname, *args, **kargs):
+def from_filename(fname):
     try:
         with open(fname) as fhandle:
-            return from_filehandle(fhandle, name=fname, *args, **kargs)
+            return from_filehandle(fhandle)
     except IOError, e:
         if e.errno == errno.ENOENT:
             raise TorrentFileError(

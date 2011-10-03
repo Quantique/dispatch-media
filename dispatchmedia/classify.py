@@ -1,7 +1,7 @@
 # Copyright 2010 Quantique. Licence: GPL3+
 
 from dispatchmedia.common import unix_basename, ensure_dir
-from dispatchmedia.torrents import TorrentData
+from . import torrents
 import dispatchmedia.media_types as MT
 
 from collections import defaultdict
@@ -120,7 +120,7 @@ class Torrent(Release):
 
     def __init__(self, *args, **kargs):
         super(Torrent, self).__init__(*args, **kargs)
-        self._data = TorrentData.from_file(self.fname)
+        self._data = torrents.from_filename(self.fname).as_torrent()
 
     def iter_names_and_sizes(self):
         return self._data.torrent_files()
@@ -188,7 +188,7 @@ class TransmissionTorrent(Torrent):
 
     @property
     def transmission_down_dir(self):
-        resume_data = TorrentData.from_file(self.transmission_resume_fname)
+        resume_data = torrents.from_file(self.transmission_resume_fname)
         # XXX Not sure about encoding
         ddir = resume_data._tdata['destination'].decode('utf-8')
         del resume_data
