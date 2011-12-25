@@ -157,7 +157,9 @@ def from_filehandle(fhandle):
         file_name = None
 
     # XXX close ASAP doesn't work well for stdin
-    with contextlib.closing(fhandle):
+    # Same problem with files opened r+
+    #with contextlib.closing(fhandle):
+    if True:
         fdata = fhandle.read()
 
     if not fdata:  # Coerce to bool -> test for emptiness

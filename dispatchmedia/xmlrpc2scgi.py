@@ -47,6 +47,7 @@ __all__ = ( 'do_xmlrpc', 'convert_params_to_native', )
 
 
 import pipes
+import posixpath
 import subprocess
 import sys
 import urlparse
@@ -164,8 +165,15 @@ def cmd_of_endpoint(url):
             raise ValueError(url)
         cmd = [ NETCAT, '--', netloc ]
     elif us.scheme == SCHEME_UNIX:
-        if url != urlparse.urlunsplit((SCHEME_UNIX, '', path, '', '')):
+        if (url != urlparse.urlunsplit((SCHEME_UNIX, '', path, '', ''))
+           and url != urlparse.urlunsplit(('', '', path, '', ''))):
             raise ValueError(url)
+        if path.startswith('~/'):
+            path = posixpath.expanduser(path)
+        elif path.startswith('/'):
+            pass
+        else:
+            raise ValueError(path, 'Path must start with / or ~/')
         cmd = [ NETCAT, '-U', '--', path ]
     elif us.scheme == SCHEME_SSH_UNIX:
         if url != urlparse.urlunsplit((SCHEME_SSH_UNIX, netloc, path, '', '')):
@@ -219,7 +227,7 @@ def do_transport(endpoint, data):
     proc.wait()
 
     if proc.returncode:
-        raise subprocess.CalledProcessError(cmd, proc.returncode)
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
     return parse_http(resp_http)
 
