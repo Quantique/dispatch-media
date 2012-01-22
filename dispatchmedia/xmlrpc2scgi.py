@@ -48,6 +48,7 @@ __all__ = ( 'do_xmlrpc', 'convert_params_to_native', )
 
 import pipes
 import posixpath
+import re
 import subprocess
 import sys
 import urlparse
@@ -257,18 +258,25 @@ def do_xmlrpc(endpoint, method, *args):
     return resp
 
 
+POSINT_RE = re.compile(r'^[0-9]+$')
+
+
 def convert_params_to_native(params):
     """ Parse xmlrpc-c command line arg syntax.
 
-        Arguments are strings, unless prefixed by b/ i/ s/
+        Arguments are integers if they match [0-9]+, strings otherwise,
+        unless prefixed by b/ i/ s/
         In which case, they are bools, integers, or strings.
-        s/ should be used if a string may contain a slash.
+        Explicit prefixes are recommended when dealing with external input.
     """
 
     cparams = []
     for param in params:
         if len(param) < 2 or param[1] != '/':
-            cparams.append(param)
+            if POSINT_RE.match(param):
+                cparams.append(int(param))
+            else:
+                cparams.append(str(param))
             continue
 
         if param[0] == 'i':
@@ -278,8 +286,7 @@ def convert_params_to_native(params):
         elif param[0] == 's':
             ptype = str
         else:
-            cparams.append(param)
-            continue
+            raise ValueError('Invalid parameter', param)
 
         cparams.append(ptype(param[2:]))
 
