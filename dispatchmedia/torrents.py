@@ -184,7 +184,7 @@ def from_filename(fname):
     except IOError, e:
         if e.errno == errno.ENOENT:
             raise TorrentFileError(
-                'Torrent file doesn\'t exist: %s' % fname)
+                'Torrent file doesn\'t exist: %r' % fname)
         else:
             raise
 

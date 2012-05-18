@@ -58,8 +58,10 @@ class EBook(Media):
             else:
                 return cls.__name__
 class Font(Media): pass
+class Gallery(Media): pass
 class Iso(AlwaysSingular, Media): pass
 class Movie(Media): pass
+class Package(Media): pass
 class PC(AlwaysSingular, Media): pass
 class PS2(AlwaysSingular, Media): pass
 class PS3(AlwaysSingular, Media): pass

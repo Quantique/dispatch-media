@@ -33,6 +33,8 @@ ISO_EXTS = defset('iso nrg ccd b5i cdi')
 COMICBOOK_EXTS = defset('cbt cbr cbz')
 EBOOK_EXTS = defset(
     'epub html htm chm rtf txt djvu pdf doc docx lrf mobi lit eps')
+GALLERY_EXTS = defset('jpg jpeg png gif bmp')
+PACKAGE_EXTS = defset('deb rpm msi dmg')
 SUBTITLES_EXTS = defset('ass ssa srt sub sup')
 
 # Common tar archives
@@ -334,6 +336,10 @@ def classify(release):
             return MT.Album
         else:
             return MT.Discography
+    elif ext_of_bulk in GALLERY_EXTS:
+        return MT.Gallery
+    elif ext_of_bulk in PACKAGE_EXTS:
+        return MT.Package
     elif ext_of_bulk in COMICBOOK_EXTS:
         return MT.Comics
     elif ext_of_bulk in EBOOK_EXTS:
