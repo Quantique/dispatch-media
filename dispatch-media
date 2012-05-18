@@ -418,6 +418,12 @@ def dispatch_rtorrent(source_config, helper):
         endpoint, 'd.multicall', 'complete',
         'd.get_hash=', 'd.get_base_path=', 'd.get_loaded_file=',
     ):
+        if not fname:
+            # Happens with .meta files
+            LOGGER.warn(
+                'Info hash %s doesn\'t have an associated torrent file',
+                info_hash)
+            continue
         fname = os.path.expanduser(fname)
         release = CL.RTorrentTorrent(fname, info_hash)
         dest_parent = helper.lookup_cat(release)
