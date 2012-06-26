@@ -414,20 +414,35 @@ def dispatch_rtorrent(source_config, helper):
     endpoint = os.path.expanduser(source_config['endpoint'])
     action = RTORRENT_ACTIONS[source_config['action']]
 
-    for (info_hash, down_loc, fname) in do_xmlrpc(
+    for (info_hash, down_loc, fname, fname2, dname, dname2) in do_xmlrpc(
         endpoint, 'd.multicall', 'complete',
-        'd.get_hash=', 'd.get_base_path=', 'd.get_loaded_file=',
+        'd.get_hash=', 'd.get_base_path=',
+        'd.get_loaded_file=', 'd.get_tied_to_file=',
+        'd.get_directory=', 'd.get_directory_base=',
     ):
+        if not down_loc:
+            assert dname, info_hash
+            down_loc = dname
         if not fname:
-            # Happens with .meta files
-            LOGGER.warn(
-                'Info hash %s doesn\'t have an associated torrent file',
-                info_hash)
-            continue
+            if fname2:
+                # Happens with .meta files, though that seems to be
+                # rectified once rtorrent is restarted.
+                # These need a different loader, either from the .meta
+                # or from the rtorrent API.
+                fname = fname2
+            else:
+                LOGGER.warn(
+                    'Info hash %s doesn\'t have an associated torrent file',
+                    info_hash)
+                continue
         fname = os.path.expanduser(fname)
-        release = CL.RTorrentTorrent(fname, info_hash)
+        release = CL.RTorrentTorrent(fname, endpoint, info_hash)
         dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
+            continue
+        #LOGGER.warn('down_loc %r', down_loc)
+        if not down_loc:
+            LOGGER.warn('Empty d.get_base_path: %r', info_hash)
             continue
         action(release, down_loc, dest_parent)
 

@@ -1,8 +1,9 @@
 # Copyright 2010 Quantique. Licence: GPL3+
 
-from dispatchmedia.common import unix_basename, ensure_dir
+from . import media_types as MT
 from . import torrents
-import dispatchmedia.media_types as MT
+from .common import unix_basename, ensure_dir
+from .xmlrpc2scgi import do_xmlrpc
 
 from collections import defaultdict
 import logging
@@ -129,7 +130,7 @@ class Torrent(Release):
 
     def walk_lockstep(self, down_loc, dest_parent):
         if not os.path.exists(down_loc):
-            LOGGER.warn('Skipping inexistent %s', down_loc)
+            LOGGER.warn('Skipping inexistent torrent root %s', down_loc)
             return
 
         dest_loc = os.path.join(dest_parent, self._data.name)
@@ -144,7 +145,7 @@ class Torrent(Release):
             path_chars = self._data.multi_finfo_path(path_bytes)
             src = os.path.join(down_loc, *path_chars)
             if not os.path.exists(src):
-                LOGGER.debug('Skipping inexistent %s', src)
+                LOGGER.debug('Skipping inexistent torrent entry %s', src)
                 continue
             dest = os.path.join(dest_loc, *path_chars)
             dir_path = path_chars[:-1]
@@ -165,10 +166,60 @@ class Torrent(Release):
         return self._data.name
 
 
-class RTorrentTorrent(Torrent):
-    def __init__(self, fname, info_hash):
+class RTorrentTorrent(Release):
+    is_indirect = True
+
+    def __init__(self, fname, endpoint, info_hash):
         super(RTorrentTorrent, self).__init__(fname)
         self.info_hash = info_hash
+        self.endpoint = endpoint
+        resps = do_xmlrpc(self.endpoint, 'system.multicall', [
+            dict(methodName='d.get_name', params=[info_hash]),
+            dict(methodName='d.is_multi_file', params=[info_hash]),
+        ])
+        (self.name, ), (self.is_multi, ) = resps
+
+    def iter_names_and_sizes(self):
+        resps = do_xmlrpc(
+            self.endpoint, 'f.multicall',
+            self.info_hash, '', 'f.get_path=', 'f.get_size_bytes=')
+        for resp in resps:
+            path, length = resp
+            # XXX prepend name, but only in some cases, non-multi is dicier
+            yield path, length
+
+    def walk_lockstep(self, down_loc, dest_parent):
+        if not os.path.exists(down_loc):
+            LOGGER.warn('Skipping inexistent torrent root %s', down_loc)
+            return
+        if self.is_multi:
+            dest_loc = os.path.join(dest_parent, self.name)
+        else:
+            dest_loc = dest_parent
+        dirs_done = set()
+        ensure_dir(dest_loc)
+        for (path, length) in self.iter_names_and_sizes():
+            src = os.path.join(down_loc, path)
+            if not os.path.exists(src):
+                LOGGER.debug('Skipping inexistent torrent entry %s', src)
+                continue
+            entry_dest_dir = os.path.dirname(path)
+            if entry_dest_dir and entry_dest_dir not in dirs_done:
+                pfx = dest_loc
+                pfx2 = ''
+                for fragment in entry_dest_dir.split('/'):
+                    pfx += '/' + fragment
+                    if pfx2:
+                        pfx2 += '/' + fragment
+                    else:
+                        pfx2 = fragment
+                    if pfx2 not in dirs_done:
+                        ensure_dir(pfx)
+                        dirs_done.add(pfx2)
+
+            dest = os.path.join(dest_loc, path)
+            ensure_dir(os.path.dirname(dest))
+            yield src, dest
 
 
 class TransmissionTorrent(Torrent):
