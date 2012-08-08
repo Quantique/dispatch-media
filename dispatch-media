@@ -12,6 +12,7 @@ See dispatch-media.conf for configuring it.
 Dependencies (some could be made optional):
 - python-libtorrent (reading .torrent files)
 - python-yaml (configuration)
+- python-pyxattr (extended attributes, for not revisiting files twice)
 - p7zip-full (listing many archives)
 - dtrx (extracting archives)
 - rsync (efficient copying)
@@ -56,6 +57,7 @@ import re
 import shutil
 import subprocess
 import sys
+import xattr
 import yaml
 
 
@@ -436,6 +438,13 @@ def dispatch_rtorrent(source_config, helper):
                     info_hash)
                 continue
         fname = os.path.expanduser(fname)
+        done_xattr_key = 'user.dispatch.rtorrent.%s' % info_hash
+        try:
+            done = xattr.get(fname, done_xattr_key)
+        except IOError:
+            pass
+        else:
+            continue
         release = CL.RTorrentTorrent(fname, endpoint, info_hash)
         dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
@@ -445,6 +454,10 @@ def dispatch_rtorrent(source_config, helper):
             LOGGER.warn('Empty d.get_base_path: %r', info_hash)
             continue
         action(release, down_loc, dest_parent)
+        # The xattr value isn't the dest, because actions
+        # are mostly working with dest_parent and haven't
+        # been converted.
+        xattr.set(fname, done_xattr_key, 'ok')
 
 
 def dispatch_transmission(source_config, helper):
