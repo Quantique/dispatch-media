@@ -354,9 +354,6 @@ def classify(release):
 
         size_of_dir[dirname] += size
 
-    item_count_by_ext = dict(item_count_by_ext)
-    size_by_ext = dict(size_by_ext)
-
     if size_max == -1:  # No lines
         return MT.Empty
 

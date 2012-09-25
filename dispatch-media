@@ -457,7 +457,13 @@ def dispatch_rtorrent(source_config, helper):
         # The xattr value isn't the dest, because actions
         # are mostly working with dest_parent and haven't
         # been converted.
-        xattr.set(fname, done_xattr_key, 'ok')
+        try:
+            xattr.set(fname, done_xattr_key, 'ok')
+        except IOError, e:
+            if e.errno == errno.ENOENT:
+                LOGGER.warn('Torrent file doesn\'t exist: %s', info_hash)
+            else:
+                raise
 
 
 def dispatch_transmission(source_config, helper):
