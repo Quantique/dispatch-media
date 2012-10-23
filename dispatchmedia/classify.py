@@ -192,10 +192,10 @@ class RTorrentTorrent(Release):
         if not os.path.exists(down_loc):
             LOGGER.warn('Skipping inexistent torrent root %s', down_loc)
             return
-        if self.is_multi:
-            dest_loc = os.path.join(dest_parent, self.name)
-        else:
-            dest_loc = dest_parent
+        dest_loc = os.path.join(dest_parent, self.name)
+        if not self.is_multi:
+            yield down_loc, dest_loc
+            return
         dirs_done = set()
         ensure_dir(dest_loc)
         for (path, length) in self.iter_names_and_sizes():
