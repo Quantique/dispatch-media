@@ -321,7 +321,7 @@ class DispatchHelper(object):
         if cat:
             return self.__places.dest_base_of_cat(cat, release)
 
-    def filter_items(self, source_config, item_iter, item_key=lambda x: x):
+    def filter_items(self, item_iter, item_key=lambda x: x):
         class Callbacks(object):
             def __init__(self, key):
                 self.key = key
@@ -329,7 +329,7 @@ class DispatchHelper(object):
                 db[self.key] = '1'
 
         for item in item_iter:
-            key = 'done:%s:%s' % (source_hash, item_key(item))
+            key = 'done:%s:%s' % (self._source_hash, item_key(item))
             if key in db:
                 continue
             yield item, Callbacks(key)
