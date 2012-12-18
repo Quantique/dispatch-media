@@ -27,7 +27,7 @@ def defset(line):
 # ogg could conceivably be video (oga is unambiguous)
 MUSIC_EXTS = defset('mp3 oga ogg flac m4a mpc ape wav wma')
 # mp4 could conceivably be audio (m4v is unambiguous)
-VID_EXTS = defset('avi flv mkv mpeg mpg mov ogv ogm divx m4v mp4 m2ts vob rmvb wmv')
+VID_EXTS = defset('avi flv mkv mpeg mpg mov ogv ogm divx m4v mp4 m2ts vob rmvb wmv 3gp')
 
 FONT_EXTS = defset('otf ttf ttc pfb')
 ISO_EXTS = defset('iso nrg ccd b5i cdi')
