@@ -113,7 +113,7 @@ class Release(object):
         real_ext, cl_ext = ext_of_name(fname)
         if cl_ext == '.torrent':
             return Torrent(fname)
-        if cl_ext[0] == '.' and cl_ext[1:] in ARCHIVE_EXTS:
+        if cl_ext and cl_ext[0] == '.' and cl_ext[1:] in ARCHIVE_EXTS:
             return Archive(fname)
         raise UnknownReleaseKindError('Unknown release type for %s' % fname)
 
