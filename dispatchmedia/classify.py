@@ -33,7 +33,7 @@ FONT_EXTS = defset('otf ttf ttc pfb')
 ISO_EXTS = defset('iso nrg ccd b5i cdi')
 COMICBOOK_EXTS = defset('cbt cbr cbz')
 EBOOK_EXTS = defset(
-    'epub html htm chm rtf txt djvu pdf doc docx lrf mobi lit eps')
+    'epub html htm chm rtf txt djvu pdf doc docx lrf mobi lit eps azw3')
 GALLERY_EXTS = defset('jpg jpeg png gif bmp')
 PACKAGE_EXTS = defset('deb rpm msi dmg')
 SUBTITLES_EXTS = defset('ass ssa srt sub sup')
