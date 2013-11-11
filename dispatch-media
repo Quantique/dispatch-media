@@ -79,8 +79,8 @@ def link_once(orig, dest, symbolic):
                     dest)
         elif not os.path.samefile(orig, dest):
             LOGGER.warn(
-                    '%s already exists and doesn\'t point to %s, skipping',
-                    dest, orig)
+                    '%s already exists and doesn\'t point to %s %s %s, skipping',
+                    dest, orig, orig_rel, symbolic)
         return
 
     if symbolic:
@@ -449,7 +449,7 @@ def dispatch_rtorrent(source_config, helper):
         dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
             continue
-        #LOGGER.warn('down_loc %r', down_loc)
+        #LOGGER.warn('down_loc %r %r', down_loc, dest_parent)
         if not down_loc:
             LOGGER.warn('Empty d.get_base_path: %r', info_hash)
             continue

@@ -40,9 +40,7 @@ class Unknown(AutoName): pass
 class Archive(AutoName): pass
 
 
-class Album(Media): pass
 class Comics(Media): pass
-class Discography(Media): pass
 class EBook(Media):
     @classmethod
     def name(cls, lower=False, plural=False):
@@ -61,6 +59,7 @@ class Font(Media): pass
 class Gallery(Media): pass
 class Iso(AlwaysSingular, Media): pass
 class Movie(Media): pass
+class Music(AlwaysSingular, Media): pass
 class Package(Media): pass
 class PC(AlwaysSingular, Media): pass
 class PS2(AlwaysSingular, Media): pass
@@ -69,4 +68,6 @@ class Series(Media): pass
 class Wii(AlwaysSingular, Media): pass
 class Xbox(AlwaysSingular, Media): pass
 
+# Compatibility
+Album = Discography = Music
 

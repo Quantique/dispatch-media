@@ -33,13 +33,13 @@ def ensure_dir(path, allow_link=True):
     # Make sure a directory exists
     try:
         os.mkdir(path)
-    except OSError, e:
+    except OSError as e:
         if e.errno != errno.EEXIST:
             raise
         if allow_link:  # A symlink to an existing directory is permitted
             try:
                 st = os.stat(path)
-            except OSError, e2:
+            except OSError:
                 # Broken symlink, most likely
                 raise e
         else:

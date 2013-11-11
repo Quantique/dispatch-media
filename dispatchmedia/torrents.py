@@ -12,11 +12,11 @@ LOGGER = logging.getLogger(__name__)
 try:
     # python-libtorrent
     from libtorrent import bdecode, bencode
-except ImportError, e:
+except ImportError as e:
     try:
         # python-bittorrent
         from BitTorrent.bencode import bdecode, bencode
-    except ImportError, e2:
+    except ImportError:
         raise e
     else:
         LOGGER.info('Using the slower python-bittorrent,'
@@ -171,7 +171,7 @@ def from_filehandle(fhandle):
         if not isinstance(tdata, dict):
             raise TorrentFileError(
                 "bdecoded data isn't a dictionary: %s" % desc)
-    except ValueError, exn:
+    except ValueError as exn:
         raise TorrentFileError("Couldn't bdecode file: %s" % desc)
 
     return BData(tdata, file_name=file_name)
@@ -181,7 +181,7 @@ def from_filename(fname):
     try:
         with open(fname) as fhandle:
             return from_filehandle(fhandle)
-    except IOError, e:
+    except IOError as e:
         if e.errno == errno.ENOENT:
             raise TorrentFileError(
                 'Torrent file doesn\'t exist: %r' % fname)

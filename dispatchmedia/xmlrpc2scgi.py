@@ -51,8 +51,12 @@ import posixpath
 import re
 import subprocess
 import sys
-import urlparse
-import xmlrpclib
+try:
+    import urlparse
+    import xmlrpclib
+except ImportError:
+    import urllib.parse as urlparse
+    import xmlrpc.client as xmlrpclib
 
 
 DEBUG = False
@@ -72,13 +76,16 @@ def write_scgi(stream, data):
         see spec at: http://python.ca/scgi/protocol.txt
     """
 
+    if isinstance(data, str):
+        data = data.encode()
     headers = make_scgi_headers((
         ('CONTENT_LENGTH', str(len(data))),
         ('SCGI', '1'),
     ))
 
-    stream.write(encode_netstring(headers))
+    stream.write(encode_netstring(headers).encode())
     stream.write(data)
+    stream.flush()
 
 
 ## HTTP
@@ -95,8 +102,8 @@ def parse_http(resp):
     # which is only a request spec.
     # The headers are the bare xml-rpc requirements, hard-coded by rtorrent.
     # Always 200 OK; xml-rpc has its own error signaling.
-    headers_str, content = resp.split("\r\n\r\n", 1)
-    headers = parse_http_headers(headers_str)
+    headers_str, content = resp.split(b"\r\n\r\n", 1)
+    headers = parse_http_headers(headers_str.decode())
     clen = int(headers['Content-Length'])
 
     # Just in case the transport is bogus.

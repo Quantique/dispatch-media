@@ -35,7 +35,7 @@ COMICBOOK_EXTS = defset('cbt cbr cbz')
 EBOOK_EXTS = defset(
     'epub html htm chm rtf txt djvu pdf doc docx lrf mobi lit eps azw3')
 GALLERY_EXTS = defset('jpg jpeg png gif bmp')
-PACKAGE_EXTS = defset('deb rpm msi dmg')
+PACKAGE_EXTS = defset('deb rpm msi dmg apk')
 SUBTITLES_EXTS = defset('ass ssa srt sub sup')
 
 # Common tar archives
@@ -48,7 +48,7 @@ for ext in TAR_COMPTYPES:
 # jar and ace are archives, I don't plan to deal with them.
 # bin can be bin/cue (iso-like), or a binary executable.
 # there's some magic below to handle bin/cue.
-AMBIGUOUS_EXTS = defset('png jpg jpeg gif py xml exe bin jar ace sh')
+AMBIGUOUS_EXTS = defset('py xml exe bin jar ace sh')
 # Not dealing with subs-only releases right now
 AMBIGUOUS_EXTS.update(SUBTITLES_EXTS)
 
@@ -354,7 +354,7 @@ def classify(release):
 
         size_of_dir[dirname] += size
 
-    if size_max == -1:  # No lines
+    if size_max <= 0:  # No files or empty files
         return MT.Empty
 
     largest_dir = max(size_of_dir, key=lambda d: size_of_dir[d])
@@ -375,11 +375,12 @@ def classify(release):
 
     release_tokens = set()
     release_tokens.update(TERM_SEP_RE.split(common_prefix.lower()))
-    if release.name:
+    if hasattr(release, 'name') and release.name:
         release_tokens.update(TERM_SEP_RE.split(release.name.lower()))
     LOGGER.debug('Tokens searched for hints: %s', ' '.join(release_tokens))
 
     if ext_of_bulk in MUSIC_EXTS:
+        return MT.Music
         if largest_dir_rel_weight > .7:
             return MT.Album
         else:
