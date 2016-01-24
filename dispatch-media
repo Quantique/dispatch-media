@@ -71,6 +71,8 @@ def link_once(orig, dest, symbolic):
         orig_rel = os.path.relpath(orig, os.path.dirname(dest))
         if os.path.islink(dest) and os.readlink(dest) == orig_rel:
             return
+    else:
+        orig_rel = None
 
     if os.path.lexists(dest):
         if not os.path.exists(dest):
@@ -415,12 +417,14 @@ def dispatch_torrents(source_config, helper):
 def dispatch_rtorrent(source_config, helper):
     endpoint = os.path.expanduser(source_config['endpoint'])
     action = RTORRENT_ACTIONS[source_config['action']]
+    session_dir = do_xmlrpc(endpoint, 'session.path')
+    exclusions = [os.path.normpath(os.path.expanduser(ex)) + '/' for ex in source_config['exclude']]
 
     for (info_hash, down_loc, fname, fname2, dname, dname2) in do_xmlrpc(
-        endpoint, 'd.multicall', 'complete',
-        'd.get_hash=', 'd.get_base_path=',
-        'd.get_loaded_file=', 'd.get_tied_to_file=',
-        'd.get_directory=', 'd.get_directory_base=',
+        endpoint, 'd.multicall2', '', 'complete',
+        'd.hash=', 'd.base_path=',
+        'd.loaded_file=', 'd.tied_to_file=',
+        'd.directory=', 'd.directory_base=',
     ):
         if not down_loc:
             assert dname, info_hash
@@ -433,17 +437,16 @@ def dispatch_rtorrent(source_config, helper):
                 # or from the rtorrent API.
                 fname = fname2
             else:
-                LOGGER.warn(
-                    'Info hash %s doesn\'t have an associated torrent file',
-                    info_hash)
-                continue
+                fname = os.path.join(session_dir, info_hash + '.torrent')
         fname = os.path.expanduser(fname)
         done_xattr_key = 'user.dispatch.rtorrent.%s' % info_hash
         try:
             done = xattr.get(fname, done_xattr_key)
+            del done
         except IOError:
             pass
         else:
+            #pass
             continue
         release = CL.RTorrentTorrent(fname, endpoint, info_hash)
         dest_parent = helper.lookup_cat(release)
@@ -451,7 +454,10 @@ def dispatch_rtorrent(source_config, helper):
             continue
         #LOGGER.warn('down_loc %r %r', down_loc, dest_parent)
         if not down_loc:
-            LOGGER.warn('Empty d.get_base_path: %r', info_hash)
+            LOGGER.warn('Empty d.base_path: %r', info_hash)
+            continue
+        if any(down_loc.startswith(ex) for ex in exclusions):
+            LOGGER.warn('Excluded down_loc %r', down_loc)
             continue
         action(release, down_loc, dest_parent)
         # The xattr value isn't the dest, because actions
