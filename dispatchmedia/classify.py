@@ -18,14 +18,14 @@ LINE_RE = re.compile(r'^(\d+) (.+)\n$')
 # r00 style multipart
 RAR_EXT_RE = re.compile(r'^\.r(\d\d)$')
 TERM_SEP_RE = re.compile(r'[_\W]+', re.UNICODE)
-SEVEN_BORDER_RE = re.compile(r'^-+ -+ (-+) -+  (-+)\n$')
+SEVEN_BORDER_RE = re.compile(r'^-+ -+ (-+) (-+)  (-+)\n$')
 
 
 def defset(line):
     return set(line.split())
 
 # ogg could conceivably be video (oga is unambiguous)
-MUSIC_EXTS = defset('mp3 oga ogg flac m4a mpc ape wav wma')
+MUSIC_EXTS = defset('mp3 oga ogg flac m4a ac3 dts mpc ape wav wma')
 # mp4 could conceivably be audio (m4v is unambiguous)
 VID_EXTS = defset('avi flv mkv mpeg mpg mov ogv ogm divx m4v mp4 m2ts vob rmvb wmv 3gp asf')
 
@@ -40,10 +40,12 @@ SUBTITLES_EXTS = defset('ass ssa srt sub sup')
 
 # Common tar archives
 TAR_COMPTYPES = defset('gz bz2 xz')
-ARCHIVE_EXTS = defset('rar zip tar 7z')
+NONTAR_ARCHIVE_EXTS = defset('rar zip 7z')
+TAR_ARCHIVE_EXTS = defset('tar')
 for ext in TAR_COMPTYPES:
-    ARCHIVE_EXTS.add('tar.' + ext)
-    ARCHIVE_EXTS.add('t' + ext)
+    TAR_ARCHIVE_EXTS.add('tar.' + ext)
+    TAR_ARCHIVE_EXTS.add('t' + ext)
+ARCHIVE_EXTS = set.union(TAR_ARCHIVE_EXTS, NONTAR_ARCHIVE_EXTS)
 
 # jar and ace are archives, I don't plan to deal with them.
 # bin can be bin/cue (iso-like), or a binary executable.
@@ -174,7 +176,7 @@ class RTorrentTorrent(Release):
         self.info_hash = info_hash
         self.endpoint = endpoint
         resps = do_xmlrpc(self.endpoint, 'system.multicall', [
-            dict(methodName='d.get_name', params=[info_hash]),
+            dict(methodName='d.name', params=[info_hash]),
             dict(methodName='d.is_multi_file', params=[info_hash]),
         ])
         (self.name, ), (self.is_multi, ) = resps
@@ -182,7 +184,7 @@ class RTorrentTorrent(Release):
     def iter_names_and_sizes(self):
         resps = do_xmlrpc(
             self.endpoint, 'f.multicall',
-            self.info_hash, '', 'f.get_path=', 'f.get_size_bytes=')
+            self.info_hash, '', 'f.path=', 'f.size_bytes=')
         for resp in resps:
             path, length = resp
             # XXX prepend name, but only in some cases, non-multi is dicier
@@ -294,7 +296,21 @@ class Directory(Release):
 class Archive(Release):
     is_indirect = False
 
-    def iter_names_and_sizes(self):
+    def _iter_tar(self):
+        # Unlike other methods, this is unindexed and slow
+        cmd = ['tar', 'tvf', self.fname, ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        for line in proc.stdout:
+            els = line.split()
+            na = els[5]
+            if na.endswith('/'):
+                continue
+            yield na, els[2]
+        proc.wait()
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+    def _iter_7z(self):
         # unrar l -v could also work, but it's nonsensical to parse
         # some begin/end sections, some uniq
         # pypi:rarfile isn't packaged
@@ -309,14 +325,28 @@ class Archive(Release):
                     break
                 else:
                     s0, s1 = match.span(1)
-                    n0, n1 = match.span(2)
+                    s2, s3 = match.span(2)
+                    n0, n1 = match.span(3)
                     inside = True
             elif inside:
-                yield line[n0:-1], line[s0:s1]
+                si = line[s0:s1]
+                if not si.strip():
+                    si = line[s2:s3]
+                yield line[n0:-1], si
 
         proc.wait()
         if proc.returncode:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+    def iter_names_and_sizes(self):
+        # indexed containers only (except uncompressed tar, which 7z will list slowly)
+        return self._iter_7z()
+
+        real_ext, cl_ext = ext_of_name(self.fname)
+        if cl_ext[1:] in TAR_ARCHIVE_EXTS:
+            return self._iter_tar()
+        else:
+            return self._iter_7z()
 
 
 def classify(release):

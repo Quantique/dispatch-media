@@ -43,7 +43,7 @@ Run XMLRPC over SCGI.
 """
 
 
-__all__ = ( 'do_xmlrpc', 'convert_params_to_native', )
+__all__ = ( 'do_xmlrpc', 'convert_params_to_native', 'RPCError')
 
 
 import pipes
@@ -57,6 +57,10 @@ try:
 except ImportError:
     import urllib.parse as urlparse
     import xmlrpc.client as xmlrpclib
+
+
+class RPCError(Exception):
+    pass
 
 
 DEBUG = False
@@ -233,9 +237,13 @@ def do_transport(endpoint, data):
     resp_http = proc.stdout.read()
     proc.stdin.close()
     proc.wait()
+    proc.stdout.close()
 
     if proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
+        raise RPCError('nc', proc.returncode, cmd)
+
+    if not resp_http:
+        raise RPCError('empty', cmd)
 
     return parse_http(resp_http)
 
@@ -272,8 +280,8 @@ def convert_params_to_native(params):
     """ Parse xmlrpc-c command line arg syntax.
 
         Arguments are integers if they match [0-9]+, strings otherwise,
-        unless prefixed by b/ i/ s/
-        In which case, they are bools, integers, or strings.
+        unless prefixed by b/ i/ s/ l/
+        In which case, they are bools, integers, strings, or lists.
         Explicit prefixes are recommended when dealing with external input.
     """
 
@@ -292,6 +300,8 @@ def convert_params_to_native(params):
             ptype = bool
         elif param[0] == 's':
             ptype = str
+        elif param[0] == 'l':
+            ptype = lambda x: x.split(',')
         else:
             raise ValueError('Invalid parameter', param)
 
