@@ -458,8 +458,8 @@ def dispatch_rtorrent(source_config, helper):
             continue
         if any(down_loc.startswith(ex) for ex in exclusions):
             LOGGER.warn('Excluded down_loc %r', down_loc)
-            continue
-        action(release, down_loc, dest_parent)
+        else:
+            action(release, down_loc, dest_parent)
         # The xattr value isn't the dest, because actions
         # are mostly working with dest_parent and haven't
         # been converted.
