@@ -22,18 +22,20 @@ class AlwaysSingular(AutoName):
     def name(cls, plural=False, *args, **kargs):
         return super(AlwaysSingular, cls).name(*args, **kargs)
 
-class Media(AutoName):
+class MetaMedia(type):
+    def __init__(cls, name, bases, attrs):
+        type.__init__(cls, name, bases, attrs)
+        if cls.registry is None:
+            cls.registry = {}
+        else:
+            cls.registry[name] = cls
+            cls.registry[cls.name(lower=True)] = cls
+            cls.registry[cls.name(plural=True)] = cls
+            cls.registry[cls.name(plural=True, lower=True)] = cls
+
+
+class Media(AutoName, metaclass=MetaMedia):
     registry = None
-    class __metaclass__(type):
-        def __init__(cls, name, bases, attrs):
-            type.__init__(cls, name, bases, attrs)
-            if cls.registry is None:
-                cls.registry = {}
-            else:
-                cls.registry[name] = cls
-                cls.registry[cls.name(lower=True)] = cls
-                cls.registry[cls.name(plural=True)] = cls
-                cls.registry[cls.name(plural=True, lower=True)] = cls
 
 class Empty(AutoName): pass
 class Unknown(AutoName): pass

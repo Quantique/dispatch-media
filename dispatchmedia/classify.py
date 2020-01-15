@@ -132,7 +132,7 @@ class Torrent(Release):
 
     def walk_lockstep(self, down_loc, dest_parent):
         if not os.path.exists(down_loc):
-            LOGGER.warn('Skipping inexistent torrent root %s', down_loc)
+            LOGGER.warning('Skipping inexistent torrent root %s', down_loc)
             return
 
         dest_loc = os.path.join(dest_parent, self._data.name)
@@ -192,7 +192,7 @@ class RTorrentTorrent(Release):
 
     def walk_lockstep(self, down_loc, dest_parent):
         if not os.path.exists(down_loc):
-            LOGGER.warn('Skipping inexistent torrent root %s', down_loc)
+            LOGGER.warning('Skipping inexistent torrent root %s', down_loc)
             return
         dest_loc = os.path.join(dest_parent, self.name)
         if not self.is_multi:
@@ -259,7 +259,7 @@ class Directory(Release):
 
     def iter_names_and_sizes(self):
         cmd = ['find', '-type', 'f', '-printf', '%s %p\n', ]
-        proc = subprocess.Popen(cmd, cwd=self.fname, stdout=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, cwd=self.fname, stdout=subprocess.PIPE, text=True)
 
         for item in istream_iter(proc.stdout):
             yield item
@@ -281,7 +281,7 @@ class Directory(Release):
             # maybe we should error out anyway.
             if os.path.lexists(d2):
                 if not os.path.isdir(d2):
-                    LOGGER.warn('%s already exists and isn\'t a directory', d2)
+                    LOGGER.warning('%s already exists and isn\'t a directory', d2)
                     # Prevent recursion
                     dirnames[:] = []
                     continue
@@ -299,7 +299,7 @@ class Archive(Release):
     def _iter_tar(self):
         # Unlike other methods, this is unindexed and slow
         cmd = ['tar', 'tvf', self.fname, ]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
         for line in proc.stdout:
             els = line.split()
             na = els[5]
@@ -315,7 +315,7 @@ class Archive(Release):
         # some begin/end sections, some uniq
         # pypi:rarfile isn't packaged
         cmd = ['7z', 'l', '--', self.fname, ]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
         inside = False
 
         for line in proc.stdout:
@@ -391,7 +391,7 @@ def classify(release):
     largest_dir_rel_weight = float(size_of_dir[largest_dir]) / total_size
 
     if not ext_size_max_item:
-        LOGGER.warn('The bulk of the release has no file extension.')
+        LOGGER.warning('The bulk of the release has no file extension.')
         # The empty ext dominates
         return MT.Unknown
 
@@ -456,7 +456,7 @@ def classify(release):
         return MT.Unknown
     else:
         # Invite to submit a bug report?
-        LOGGER.warn(
+        LOGGER.warning(
             'Extension %s wasn\'t recognized',
             ext_of_bulk)
         LOGGER.info(

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # Copyright 2010 Quantique. Licence: GPL3+
 # ~/bin/dispatch-media
 
@@ -10,9 +10,9 @@ See dispatch-media.conf for configuring it.
 
 
 Dependencies (some could be made optional):
-- python-libtorrent (reading .torrent files)
-- python-yaml (configuration)
-- python-pyxattr (extended attributes, for not revisiting files twice)
+- python3-libtorrent (reading .torrent files)
+- python3-yaml (configuration)
+- python3-xattr (extended attributes, for not revisiting files twice)
 - p7zip-full (listing many archives)
 - dtrx (extracting archives)
 - rsync (efficient copying)
@@ -30,14 +30,6 @@ TODO:
 
     A special mode for single-file torrents. eg, music -> tracks.
 """
-
-# Unbreak stdio encodings. See setencoding in site.py
-# The less intrusive getwriter method fails when output is a file.
-import imp, sys
-imp.reload(sys)
-import locale
-sys.setdefaultencoding(locale.getdefaultlocale()[1])
-
 
 import dispatchmedia.classify as CL
 from dispatchmedia.common import iso8601_now, ensure_dir, memoized_property
@@ -76,11 +68,11 @@ def link_once(orig, dest, symbolic):
 
     if os.path.lexists(dest):
         if not os.path.exists(dest):
-            LOGGER.warn(
+            LOGGER.warning(
                     '%s already exists and is a broken symlink, skipping',
                     dest)
         elif not os.path.samefile(orig, dest):
-            LOGGER.warn(
+            LOGGER.warning(
                     '%s already exists and doesn\'t point to %s %s %s, skipping',
                     dest, orig, orig_rel, symbolic)
         return
@@ -90,11 +82,11 @@ def link_once(orig, dest, symbolic):
     else:
         try:
             os.link(orig, dest)
-        except OSError, e:
+        except OSError as e:
             if e.errno != errno.EPERM:
                 raise
             # chattr +i prevents hardlinking, sadly
-            LOGGER.warn('%s linking %s to %s', e.strerror, orig, dest)
+            LOGGER.warning('%s linking %s to %s', e.strerror, orig, dest)
 
 
 def link_deep(release, orig, dest, symbolic):
@@ -121,7 +113,7 @@ def hardlink_deep(release, orig, dest):
 
 def move_once(release, orig, dest):
     if os.path.lexists(dest):
-        LOGGER.warn(
+        LOGGER.warning(
                 '%s already exists, skipping move of %s',
                 dest, orig)
         return
@@ -194,7 +186,7 @@ def iter_rar_releases(basedir, depth):
                 ')',
             ')', '-print',
         ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
 
     for line in proc.stdout:
         archive_path = line.rstrip()
@@ -241,7 +233,7 @@ def extract_archive(rr, dest_parent, move_archive_on_success=True):
     # List the files so we know where they were extracted.
     cmd = ['dtrx', '-nv', '--', os.path.abspath(rr.archive_path), ]
     proc = subprocess.Popen(cmd,
-            cwd=dest_parent, stdout=subprocess.PIPE)
+            cwd=dest_parent, stdout=subprocess.PIPE, text=True)
 
     line = next(proc.stdout)
     dtrx_dest = os.path.normpath(line.rstrip())
@@ -304,9 +296,9 @@ class Places(object):
         if not os.path.exists(dest_parent):
             if self.autocreate:
                 LOGGER.info('Creating %s', dest_parent)
-                os.makedirs(dest_parent, mode=0700)
+                os.makedirs(dest_parent, mode=0o700)
             else:
-                LOGGER.warn('Skipping %s, please create %s',
+                LOGGER.warning('Skipping %s, please create %s',
                         release, dest_parent)
                 return
         return dest_parent
@@ -361,17 +353,17 @@ class DispatchHelper(object):
 def lookup_cat(release):
     try:
         cat = CL.classify(release)
-    except subprocess.CalledProcessError, e:
-        LOGGER.warn(e)
+    except subprocess.CalledProcessError as e:
+        LOGGER.warning(e)
         return
-    except TorrentFileError, e:
-        LOGGER.warn(e)
+    except TorrentFileError as e:
+        LOGGER.warning(e)
         # Some errors don't name the release, do so
-        LOGGER.warn('Skipping torrent %s', release)
+        LOGGER.warning('Skipping torrent %s', release)
         return
-    except UnicodeDecodeError, e:
+    except UnicodeDecodeError as e:
         LOGGER.info(e)
-        LOGGER.warn(
+        LOGGER.warning(
             'Skipping torrent with bad character encoding %s', release)
         return
 
@@ -402,7 +394,7 @@ def dispatch_torrents(source_config, helper):
     for torrent, cb in helper.filter_items(glob.iglob(pattern)):
         try:
             release = CL.Torrent(torrent)
-        except TorrentFileError, err:
+        except TorrentFileError as err:
             LOGGER.error(err)
             continue
 
@@ -439,9 +431,10 @@ def dispatch_rtorrent(source_config, helper):
             else:
                 fname = os.path.join(session_dir, info_hash + '.torrent')
         fname = os.path.expanduser(fname)
-        done_xattr_key = 'user.dispatch.rtorrent.%s' % info_hash
+        fattr = xattr.xattr(fname)
+        done_xattr_key = ('user.dispatch.rtorrent.%s' % info_hash).encode()
         try:
-            done = xattr.get(fname, done_xattr_key)
+            done = fattr.get(done_xattr_key)
             del done
         except IOError:
             pass
@@ -452,22 +445,22 @@ def dispatch_rtorrent(source_config, helper):
         dest_parent = helper.lookup_cat(release)
         if dest_parent is None:
             continue
-        #LOGGER.warn('down_loc %r %r', down_loc, dest_parent)
+        #LOGGER.warning('down_loc %r %r', down_loc, dest_parent)
         if not down_loc:
-            LOGGER.warn('Empty d.base_path: %r', info_hash)
+            LOGGER.warning('Empty d.base_path: %r', info_hash)
             continue
         if any(down_loc.startswith(ex) for ex in exclusions):
-            LOGGER.warn('Excluded down_loc %r', down_loc)
+            LOGGER.warning('Excluded down_loc %r', down_loc)
         else:
             action(release, down_loc, dest_parent)
         # The xattr value isn't the dest, because actions
         # are mostly working with dest_parent and haven't
         # been converted.
         try:
-            xattr.set(fname, done_xattr_key, 'ok')
-        except IOError, e:
+            fattr.set(done_xattr_key, b'ok')
+        except IOError as e:
             if e.errno == errno.ENOENT:
-                LOGGER.warn('Torrent file doesn\'t exist: %s', info_hash)
+                LOGGER.warning('Torrent file doesn\'t exist: %s', info_hash)
             else:
                 raise
 
@@ -554,7 +547,7 @@ def main():
     try:
         with open(options.config) as confstream:
             config = yaml.safe_load(confstream)
-    except IOError, err:
+    except IOError as err:
         LOGGER.error('Configuration file %s couldn\'t be loaded, exiting',
                 options.config)
         return 3

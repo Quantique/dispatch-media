@@ -52,8 +52,8 @@ import re
 import subprocess
 import sys
 try:
-    import urlparse
-    import xmlrpclib
+    import urllib.parse
+    import xmlrpc.client
 except ImportError:
     import urllib.parse as urlparse
     import xmlrpc.client as xmlrpclib
@@ -121,8 +121,8 @@ def parse_http(resp):
 SCHEME_TCP = 'tcp'
 SCHEME_UNIX = 'unix'
 SCHEME_SSH_UNIX = 'ssh+unix'
-urlparse.uses_netloc.append(SCHEME_TCP)
-urlparse.uses_netloc.append(SCHEME_SSH_UNIX)
+urllib.parse.uses_netloc.append(SCHEME_TCP)
+urllib.parse.uses_netloc.append(SCHEME_SSH_UNIX)
 
 # POSIX.2 portable
 NETCAT = '/bin/nc'
@@ -166,19 +166,19 @@ def cmd_of_endpoint(url):
     # The only exception is for redirecting ports, which can't be used
     # to access a domain socket.
 
-    us = urlparse.urlsplit(url, SCHEME_UNIX, allow_fragments=False)
+    us = urllib.parse.urlsplit(url, SCHEME_UNIX, allow_fragments=False)
     path = us.path
     netloc = us.netloc
 
     if us.scheme == SCHEME_TCP:
-        if url != urlparse.urlunsplit((SCHEME_TCP, netloc, '/', '', '')):
+        if url != urllib.parse.urlunsplit((SCHEME_TCP, netloc, '/', '', '')):
             raise ValueError(url)
         if netloc != '%s:%d' % (us.hostname, us.port):
             raise ValueError(url)
         cmd = [ NETCAT, '--', netloc ]
     elif us.scheme == SCHEME_UNIX:
-        if (url != urlparse.urlunsplit((SCHEME_UNIX, '', path, '', ''))
-           and url != urlparse.urlunsplit(('', '', path, '', ''))):
+        if (url != urllib.parse.urlunsplit((SCHEME_UNIX, '', path, '', ''))
+           and url != urllib.parse.urlunsplit(('', '', path, '', ''))):
             raise ValueError(url)
         if path.startswith('~/'):
             path = posixpath.expanduser(path)
@@ -188,7 +188,7 @@ def cmd_of_endpoint(url):
             raise ValueError(path, 'Path must start with / or ~/')
         cmd = [ NETCAT, '-U', '--', path ]
     elif us.scheme == SCHEME_SSH_UNIX:
-        if url != urlparse.urlunsplit((SCHEME_SSH_UNIX, netloc, path, '', '')):
+        if url != urllib.parse.urlunsplit((SCHEME_SSH_UNIX, netloc, path, '', '')):
             raise ValueError(url)
         if not path or not path.startswith('/'):
             raise ValueError(url)
@@ -256,7 +256,7 @@ def do_xmlrpc(endpoint, method, *args):
         returns:  unmarshalled response
     """
 
-    req_xml = xmlrpclib.dumps(args, method)
+    req_xml = xmlrpc.client.dumps(args, method)
     if DEBUG:
         sys.stderr.write('req_xml: %s\n' % req_xml)
     resp_xml = do_transport(endpoint, req_xml)
@@ -265,7 +265,7 @@ def do_xmlrpc(endpoint, method, *args):
 
     # Yes, it's ok to unwrap the totally superfluous methodResponse.params.
     # Faults were already turned into exceptions.
-    resp_dict = xmlrpclib.loads(resp_xml)
+    resp_dict = xmlrpc.client.loads(resp_xml)
     assert len(resp_dict) == 2 and resp_dict[1] is None \
             and len(resp_dict[0]) == 1, resp_dict
     resp = resp_dict[0][0]
